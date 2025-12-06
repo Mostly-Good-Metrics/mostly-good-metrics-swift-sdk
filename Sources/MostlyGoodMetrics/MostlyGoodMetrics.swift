@@ -312,7 +312,19 @@ public final class MostlyGoodMetrics {
     }
 
     private var appVersion: String? {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+
+        switch (version, build) {
+        case let (v?, b?) where v != b:
+            return "\(v) (\(b))"
+        case let (v?, _):
+            return v
+        case let (nil, b?):
+            return b
+        default:
+            return nil
+        }
     }
 
     private var osVersion: String {
