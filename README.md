@@ -64,7 +64,7 @@ For more control, use `MGMConfiguration`:
 ```swift
 let config = MGMConfiguration(
     apiKey: "mgm_proj_your_api_key",
-    baseURL: URL(string: "https://api.mostlygoodmetrics.com")!,  // Custom API endpoint
+    baseURL: URL(string: "https://mostlygoodmetrics.com")!,  // Custom API endpoint
     environment: "production",      // "production", "staging", "development"
     bundleId: nil,                  // Override bundle ID (optional)
     maxBatchSize: 100,              // Events per batch (max 1000)
@@ -138,7 +138,25 @@ By default, the SDK automatically tracks these lifecycle events (disable with `t
 | `$app_opened` | App becomes active (foreground) | - |
 | `$app_backgrounded` | App resigns active (background) | - |
 
-All events also include the standard context: `platform`, `os_version`, `app_version`, `session_id`, `user_id`, and `environment`.
+## Automatic Context
+
+Every event automatically includes:
+
+| Field | Example | Description |
+|-------|---------|-------------|
+| `platform` | `"ios"` | Platform (ios, macos, tvos, watchos, visionos) |
+| `os_version` | `"17.1"` | Operating system version |
+| `app_version` | `"1.0.0 (42)"` | App version with build number |
+| `environment` | `"production"` | Environment from configuration |
+| `session_id` | `"uuid..."` | Unique session ID (per app launch) |
+| `user_id` | `"user_123"` | User ID (if set via `identify()`) |
+
+Additionally, every event includes these system properties:
+
+| Property | Example | Description |
+|----------|---------|-------------|
+| `$device_type` | `"phone"` | Device type (phone, tablet, desktop, tv, watch, vision) |
+| `$device_model` | `"iPhone15,2"` | Device model identifier |
 
 > **Note:** The `$` prefix indicates reserved system events and properties. Avoid using `$` prefix for your own custom events.
 

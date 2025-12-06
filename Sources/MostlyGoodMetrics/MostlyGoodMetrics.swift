@@ -112,7 +112,15 @@ public final class MostlyGoodMetrics {
             return
         }
 
-        var event = MGMEvent(name: name, properties: properties)
+        // Merge user properties with system properties (user properties take precedence)
+        var mergedProperties = systemProperties
+        if let userProps = properties {
+            for (key, value) in userProps {
+                mergedProperties[key] = value
+            }
+        }
+
+        var event = MGMEvent(name: name, properties: mergedProperties.isEmpty ? nil : mergedProperties)
         event.userId = userId
         event.sessionId = sessionId
         event.platform = currentPlatform
@@ -375,6 +383,80 @@ public final class MostlyGoodMetrics {
         #else
         return ProcessInfo.processInfo.operatingSystemVersionString
         #endif
+    }
+
+    private var deviceType: String {
+        #if os(iOS)
+        switch UIDevice.current.userInterfaceIdiom {
+        case .phone:
+            return "phone"
+        case .pad:
+            return "tablet"
+        case .tv:
+            return "tv"
+        case .carPlay:
+            return "carplay"
+        case .mac:
+            return "mac"
+        case .vision:
+            return "vision"
+        @unknown default:
+            return "unknown"
+        }
+        #elseif os(macOS)
+        return "desktop"
+        #elseif os(tvOS)
+        return "tv"
+        #elseif os(watchOS)
+        return "watch"
+        #elseif os(visionOS)
+        return "vision"
+        #else
+        return "unknown"
+        #endif
+    }
+
+    private var deviceModel: String? {
+        #if os(iOS) || os(tvOS)
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machineMirror = Mirror(reflecting: systemInfo.machine)
+        let identifier = machineMirror.children.reduce("") { identifier, element in
+            guard let value = element.value as? Int8, value != 0 else { return identifier }
+            return identifier + String(UnicodeScalar(UInt8(value)))
+        }
+        return identifier
+        #elseif os(watchOS)
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machineMirror = Mirror(reflecting: systemInfo.machine)
+        let identifier = machineMirror.children.reduce("") { identifier, element in
+            guard let value = element.value as? Int8, value != 0 else { return identifier }
+            return identifier + String(UnicodeScalar(UInt8(value)))
+        }
+        return identifier
+        #elseif os(macOS)
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machineMirror = Mirror(reflecting: systemInfo.machine)
+        let identifier = machineMirror.children.reduce("") { identifier, element in
+            guard let value = element.value as? Int8, value != 0 else { return identifier }
+            return identifier + String(UnicodeScalar(UInt8(value)))
+        }
+        return identifier
+        #else
+        return nil
+        #endif
+    }
+
+    private var systemProperties: [String: Any] {
+        var props: [String: Any] = [
+            "$device_type": deviceType
+        ]
+        if let model = deviceModel {
+            props["$device_model"] = model
+        }
+        return props
     }
 
     private func debugLog(_ message: String) {

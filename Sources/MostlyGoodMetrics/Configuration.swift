@@ -31,7 +31,7 @@ public struct MGMConfiguration {
     public var trackAppLifecycleEvents: Bool
 
     /// Default API base URL
-    public static let defaultBaseURL = URL(string: "https://api.mostlygoodmetrics.com")!
+    public static let defaultBaseURL = URL(string: "https://mostlygoodmetrics.com")!
 
     /// Creates a new configuration with the specified API key
     /// - Parameters:
