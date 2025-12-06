@@ -26,6 +26,10 @@ public struct MGMConfiguration {
     /// Whether to enable debug logging
     public var enableDebugLogging: Bool
 
+    /// Whether to automatically track app lifecycle events (default: true)
+    /// Tracks: app_installed, app_updated, app_opened, app_backgrounded
+    public var trackAppLifecycleEvents: Bool
+
     /// Default API base URL
     public static let defaultBaseURL = URL(string: "https://api.mostlygoodmetrics.com")!
 
@@ -39,6 +43,7 @@ public struct MGMConfiguration {
     ///   - flushInterval: Seconds between auto-flush (defaults to 30)
     ///   - maxStoredEvents: Maximum cached events (defaults to 10000)
     ///   - enableDebugLogging: Whether to enable debug logging (defaults to false)
+    ///   - trackAppLifecycleEvents: Whether to auto-track lifecycle events (defaults to true)
     public init(
         apiKey: String,
         baseURL: URL = MGMConfiguration.defaultBaseURL,
@@ -47,7 +52,8 @@ public struct MGMConfiguration {
         maxBatchSize: Int = 100,
         flushInterval: TimeInterval = 30,
         maxStoredEvents: Int = 10000,
-        enableDebugLogging: Bool = false
+        enableDebugLogging: Bool = false,
+        trackAppLifecycleEvents: Bool = true
     ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
@@ -57,5 +63,6 @@ public struct MGMConfiguration {
         self.flushInterval = max(1, flushInterval)
         self.maxStoredEvents = max(100, maxStoredEvents)
         self.enableDebugLogging = enableDebugLogging
+        self.trackAppLifecycleEvents = trackAppLifecycleEvents
     }
 }

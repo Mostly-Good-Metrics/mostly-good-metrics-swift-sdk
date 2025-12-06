@@ -20,6 +20,10 @@ public final class MostlyGoodMetrics {
     private var flushTimer: Timer?
     private let flushQueue = DispatchQueue(label: "com.mostlygoodmetrics.flush")
 
+    // Keys for tracking install/update state
+    private static let installedVersionKey = "MGM_installedVersion"
+    private static let lastOpenedVersionKey = "MGM_lastOpenedVersion"
+
     /// Current user ID (persisted across sessions)
     public var userId: String? {
         didSet {
@@ -72,6 +76,7 @@ public final class MostlyGoodMetrics {
 
         startFlushTimer()
         setupAppLifecycleObservers()
+        trackInstallOrUpdate()
 
         debugLog("Initialized with \(self.storage.eventCount()) cached events")
     }
@@ -87,6 +92,7 @@ public final class MostlyGoodMetrics {
 
         startFlushTimer()
         setupAppLifecycleObservers()
+        // Skip auto-tracking for test instances
     }
 
     deinit {
@@ -280,18 +286,50 @@ public final class MostlyGoodMetrics {
 
     @objc private func appWillResignActive() {
         debugLog("App will resign active - flushing events")
+        if configuration.trackAppLifecycleEvents {
+            track("$app_backgrounded")
+        }
         flush()
     }
 
     @objc private func appDidBecomeActive() {
         debugLog("App did become active")
+        if configuration.trackAppLifecycleEvents {
+            track("$app_opened")
+        }
         flush()
+    }
+
+    private func trackInstallOrUpdate() {
+        guard configuration.trackAppLifecycleEvents else { return }
+        guard let currentVersion = appVersion else { return }
+
+        let defaults = UserDefaults.standard
+        let installedVersion = defaults.string(forKey: Self.installedVersionKey)
+        let lastOpenedVersion = defaults.string(forKey: Self.lastOpenedVersionKey)
+
+        if installedVersion == nil {
+            // First install ever
+            defaults.set(currentVersion, forKey: Self.installedVersionKey)
+            defaults.set(currentVersion, forKey: Self.lastOpenedVersionKey)
+            track("$app_installed", properties: ["$version": currentVersion])
+            debugLog("Tracked $app_installed for version \(currentVersion)")
+        } else if lastOpenedVersion != currentVersion {
+            // App was updated
+            defaults.set(currentVersion, forKey: Self.lastOpenedVersionKey)
+            track("$app_updated", properties: [
+                "$previous_version": lastOpenedVersion ?? "unknown",
+                "$version": currentVersion
+            ])
+            debugLog("Tracked $app_updated from \(lastOpenedVersion ?? "unknown") to \(currentVersion)")
+        }
     }
 
     private func validateEventName(_ name: String) -> Bool {
         guard !name.isEmpty, name.count <= 255 else { return false }
 
-        let pattern = "^[a-zA-Z][a-zA-Z0-9_]*$"
+        // Allow $ prefix for system events, otherwise must start with letter
+        let pattern = "^\\$?[a-zA-Z][a-zA-Z0-9_]*$"
         return name.range(of: pattern, options: .regularExpression) != nil
     }
 

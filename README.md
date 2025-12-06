@@ -70,7 +70,8 @@ let config = MGMConfiguration(
     maxBatchSize: 100,              // Events per batch (max 1000)
     flushInterval: 30,              // Seconds between auto-flush
     maxStoredEvents: 10000,         // Max cached events
-    enableDebugLogging: false       // Enable console logging
+    enableDebugLogging: false,      // Enable console logging
+    trackAppLifecycleEvents: true   // Auto-track lifecycle events (default: true)
 )
 
 MostlyGoodMetrics.configure(with: config)
@@ -125,6 +126,21 @@ The SDK automatically:
 - **Handles rate limiting** by respecting `Retry-After` headers
 - **Persists user ID** across app launches
 - **Generates session IDs** per app launch
+
+## Automatic Lifecycle Events
+
+By default, the SDK automatically tracks these lifecycle events (disable with `trackAppLifecycleEvents: false`):
+
+| Event | When | Properties |
+|-------|------|------------|
+| `$app_installed` | First launch ever | `$version` |
+| `$app_updated` | First launch after version change | `$version`, `$previous_version` |
+| `$app_opened` | App becomes active (foreground) | - |
+| `$app_backgrounded` | App resigns active (background) | - |
+
+All events also include the standard context: `platform`, `os_version`, `app_version`, `session_id`, `user_id`, and `environment`.
+
+> **Note:** The `$` prefix indicates reserved system events and properties. Avoid using `$` prefix for your own custom events.
 
 ## Multiple Instances
 
