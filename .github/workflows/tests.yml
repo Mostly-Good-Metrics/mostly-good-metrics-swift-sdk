@@ -61,3 +61,20 @@ jobs:
             -destination "${{ matrix.destination }}" \
             -skipPackagePluginValidation \
             | xcpretty && exit ${PIPESTATUS[0]}
+
+  pod-lint:
+    name: Pod Lint
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Install CocoaPods
+        run: gem install cocoapods
+
+      - name: Pod Lint
+        run: pod lib lint MostlyGoodMetrics.podspec --allow-warnings --platforms=osx
