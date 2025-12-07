@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(Compression)
-import Compression
-#endif
 
 /// Handles network communication with the MostlyGoodMetrics API
 final class NetworkClient {
@@ -57,8 +54,8 @@ final class NetworkClient {
         do {
             let jsonData = try encoder.encode(payload)
 
-            // Try to compress if data is large enough
-            if jsonData.count > 1024, let compressedData = compress(jsonData) {
+            // Compress with gzip if data is large enough (> 1KB)
+            if jsonData.count > 1024, let compressedData = GzipCompression.compress(jsonData) {
                 request.httpBody = compressedData
                 request.setValue("gzip", forHTTPHeaderField: "Content-Encoding")
             } else {
@@ -71,6 +68,11 @@ final class NetworkClient {
 
         if configuration.enableDebugLogging {
             debugLog("Sending \(events.count) events to \(url)")
+            if let jsonData = request.httpBody,
+               request.value(forHTTPHeaderField: "Content-Encoding") != "gzip",
+               let jsonString = String(data: jsonData, encoding: .utf8) {
+                debugLog("Request body: \(jsonString)")
+            }
         }
 
         let task = session.dataTask(with: request) { [weak self] data, response, error in
@@ -95,6 +97,9 @@ final class NetworkClient {
             case 400:
                 let errorMessage = self.parseErrorMessage(from: data)
                 self.debugLog("Bad request: \(errorMessage)")
+                if let data = data, let responseBody = String(data: data, encoding: .utf8) {
+                    self.debugLog("Response body: \(responseBody)")
+                }
                 completion(.failure(.badRequest(errorMessage)))
 
             case 401:
@@ -143,32 +148,6 @@ final class NetworkClient {
             return retryAfter
         }
         return 60 // Default to 60 seconds if not specified
-    }
-
-    private func compress(_ data: Data) -> Data? {
-        #if canImport(Compression)
-        let destinationBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: data.count)
-        defer { destinationBuffer.deallocate() }
-
-        let compressedSize = data.withUnsafeBytes { sourceBuffer -> Int in
-            guard let sourcePtr = sourceBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                return 0
-            }
-            return compression_encode_buffer(
-                destinationBuffer,
-                data.count,
-                sourcePtr,
-                data.count,
-                nil,
-                COMPRESSION_ZLIB
-            )
-        }
-
-        guard compressedSize > 0 else { return nil }
-        return Data(bytes: destinationBuffer, count: compressedSize)
-        #else
-        return nil
-        #endif
     }
 
     private func debugLog(_ message: String) {
