@@ -1,7 +1,16 @@
 import Foundation
 
+/// Protocol for network operations (allows mocking in tests)
+protocol NetworkClientProtocol {
+    func sendEvents(
+        _ events: [MGMEvent],
+        context: MGMEventContext?,
+        completion: @escaping (Result<Void, MGMError>) -> Void
+    )
+}
+
 /// Handles network communication with the MostlyGoodMetrics API
-final class NetworkClient {
+final class NetworkClient: NetworkClientProtocol {
     private let configuration: MGMConfiguration
     private let session: URLSession
     private let encoder: JSONEncoder

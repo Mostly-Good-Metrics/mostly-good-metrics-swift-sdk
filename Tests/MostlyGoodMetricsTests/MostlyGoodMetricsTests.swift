@@ -1096,3 +1096,377 @@ final class GzipCompressionTests: XCTestCase {
         // Random data might actually be larger after compression due to overhead
     }
 }
+
+// MARK: - Flush Behavior Tests
+
+/// Tests for flush behavior with different network results.
+///
+/// Verifies that:
+/// - Events are removed from storage on Success
+/// - Events are removed from storage on client errors (badRequest, unauthorized, forbidden)
+/// - Events are kept in storage on transient errors (networkError, serverError, rateLimited)
+final class FlushBehaviorTests: XCTestCase {
+
+    var storage: InMemoryEventStorage!
+    var configuration: MGMConfiguration!
+
+    override func setUp() {
+        super.setUp()
+        storage = InMemoryEventStorage(maxEvents: 100)
+        configuration = MGMConfiguration(
+            apiKey: "test-api-key",
+            enableDebugLogging: false,
+            trackAppLifecycleEvents: false
+        )
+    }
+
+    override func tearDown() {
+        storage = nil
+        configuration = nil
+        super.tearDown()
+    }
+
+    // MARK: - Success Tests
+
+    func testEventsRemovedFromStorageOnSuccess() {
+        let mockNetwork = MockNetworkClient(result: .success(()))
+        let sdk = MostlyGoodMetrics(configuration: configuration, storage: storage, networkClient: mockNetwork)
+
+        // Pre-load storage to avoid auto-flush during track()
+        storage.store(event: MGMEvent(name: "event1"))
+        storage.store(event: MGMEvent(name: "event2"))
+        storage.store(event: MGMEvent(name: "event3"))
+
+        let expectation = self.expectation(description: "Flush success")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(self.storage.eventCount(), 3)
+
+            sdk.flush { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    XCTAssertEqual(self.storage.eventCount(), 0, "Events should be removed on success")
+                    expectation.fulfill()
+                }
+            }
+        }
+
+        waitForExpectations(timeout: 5)
+    }
+
+    func testAllBatchesSentOnSuccess() {
+        let mockNetwork = MockNetworkClient(result: .success(()))
+        let smallBatchConfig = MGMConfiguration(
+            apiKey: "test-api-key",
+            maxBatchSize: 2,
+            enableDebugLogging: false,
+            trackAppLifecycleEvents: false
+        )
+
+        // Pre-load storage
+        let preloadedStorage = InMemoryEventStorage(maxEvents: 100)
+        for i in 0..<5 {
+            preloadedStorage.store(event: MGMEvent(name: "event\(i)"))
+        }
+
+        let sdk = MostlyGoodMetrics(configuration: smallBatchConfig, storage: preloadedStorage, networkClient: mockNetwork)
+
+        let expectation = self.expectation(description: "All batches sent")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(preloadedStorage.eventCount(), 5)
+
+            sdk.flush { _ in
+                // Allow time for continuation flushes
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    XCTAssertEqual(preloadedStorage.eventCount(), 0, "All events should be removed")
+                    XCTAssertGreaterThanOrEqual(mockNetwork.sendCount, 3, "Should have sent at least 3 batches")
+                    expectation.fulfill()
+                }
+            }
+        }
+
+        waitForExpectations(timeout: 10)
+    }
+
+    // MARK: - DropEvents Tests (Client Errors)
+
+    func testEventsRemovedOnBadRequest() {
+        let mockNetwork = MockNetworkClient(result: .failure(.badRequest("Invalid data")))
+        let sdk = MostlyGoodMetrics(configuration: configuration, storage: storage, networkClient: mockNetwork)
+
+        storage.store(event: MGMEvent(name: "bad_event1"))
+        storage.store(event: MGMEvent(name: "bad_event2"))
+
+        let expectation = self.expectation(description: "Bad request drops events")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(self.storage.eventCount(), 2)
+
+            sdk.flush { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    XCTAssertEqual(self.storage.eventCount(), 0, "Events should be dropped on bad request")
+                    expectation.fulfill()
+                }
+            }
+        }
+
+        waitForExpectations(timeout: 5)
+    }
+
+    func testEventsRemovedOnUnauthorized() {
+        let mockNetwork = MockNetworkClient(result: .failure(.unauthorized))
+        let sdk = MostlyGoodMetrics(configuration: configuration, storage: storage, networkClient: mockNetwork)
+
+        storage.store(event: MGMEvent(name: "event1"))
+
+        let expectation = self.expectation(description: "Unauthorized drops events")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(self.storage.eventCount(), 1)
+
+            sdk.flush { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    XCTAssertEqual(self.storage.eventCount(), 0, "Events should be dropped on unauthorized")
+                    expectation.fulfill()
+                }
+            }
+        }
+
+        waitForExpectations(timeout: 5)
+    }
+
+    func testEventsRemovedOnForbidden() {
+        let mockNetwork = MockNetworkClient(result: .failure(.forbidden("Access denied")))
+        let sdk = MostlyGoodMetrics(configuration: configuration, storage: storage, networkClient: mockNetwork)
+
+        storage.store(event: MGMEvent(name: "event1"))
+
+        let expectation = self.expectation(description: "Forbidden drops events")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(self.storage.eventCount(), 1)
+
+            sdk.flush { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    XCTAssertEqual(self.storage.eventCount(), 0, "Events should be dropped on forbidden")
+                    expectation.fulfill()
+                }
+            }
+        }
+
+        waitForExpectations(timeout: 5)
+    }
+
+    // MARK: - RetryLater Tests (Transient Errors)
+
+    func testEventsKeptOnNetworkError() {
+        let underlyingError = NSError(domain: "test", code: -1, userInfo: nil)
+        let mockNetwork = MockNetworkClient(result: .failure(.networkError(underlyingError)))
+        let sdk = MostlyGoodMetrics(configuration: configuration, storage: storage, networkClient: mockNetwork)
+
+        storage.store(event: MGMEvent(name: "event1"))
+        storage.store(event: MGMEvent(name: "event2"))
+
+        let expectation = self.expectation(description: "Network error keeps events")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(self.storage.eventCount(), 2)
+
+            sdk.flush { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    XCTAssertEqual(self.storage.eventCount(), 2, "Events should be kept for retry on network error")
+                    expectation.fulfill()
+                }
+            }
+        }
+
+        waitForExpectations(timeout: 5)
+    }
+
+    func testEventsKeptOnRateLimited() {
+        let mockNetwork = MockNetworkClient(result: .failure(.rateLimited(retryAfter: 60)))
+        let sdk = MostlyGoodMetrics(configuration: configuration, storage: storage, networkClient: mockNetwork)
+
+        storage.store(event: MGMEvent(name: "event1"))
+
+        let expectation = self.expectation(description: "Rate limited keeps events")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(self.storage.eventCount(), 1)
+
+            sdk.flush { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    XCTAssertEqual(self.storage.eventCount(), 1, "Events should be kept for retry on rate limit")
+                    expectation.fulfill()
+                }
+            }
+        }
+
+        waitForExpectations(timeout: 5)
+    }
+
+    func testEventsKeptOnServerError() {
+        let mockNetwork = MockNetworkClient(result: .failure(.serverError(500, "Internal error")))
+        let sdk = MostlyGoodMetrics(configuration: configuration, storage: storage, networkClient: mockNetwork)
+
+        storage.store(event: MGMEvent(name: "event1"))
+
+        let expectation = self.expectation(description: "Server error keeps events")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(self.storage.eventCount(), 1)
+
+            sdk.flush { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    XCTAssertEqual(self.storage.eventCount(), 1, "Events should be kept for retry on server error")
+                    expectation.fulfill()
+                }
+            }
+        }
+
+        waitForExpectations(timeout: 5)
+    }
+
+    func testEventsKeptOnUnexpectedStatusCode() {
+        let mockNetwork = MockNetworkClient(result: .failure(.unexpectedStatusCode(418)))
+        let sdk = MostlyGoodMetrics(configuration: configuration, storage: storage, networkClient: mockNetwork)
+
+        storage.store(event: MGMEvent(name: "event1"))
+
+        let expectation = self.expectation(description: "Unexpected status keeps events")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(self.storage.eventCount(), 1)
+
+            sdk.flush { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    XCTAssertEqual(self.storage.eventCount(), 1, "Events should be kept for retry")
+                    expectation.fulfill()
+                }
+            }
+        }
+
+        waitForExpectations(timeout: 5)
+    }
+
+    // MARK: - Retry Success Tests
+
+    func testEventsCanBeRetriedAfterFailure() {
+        let sequentialNetwork = SequentialMockNetworkClient(results: [
+            .failure(.networkError(NSError(domain: "test", code: -1, userInfo: nil))),
+            .success(())
+        ])
+        let sdk = MostlyGoodMetrics(configuration: configuration, storage: storage, networkClient: sequentialNetwork)
+
+        storage.store(event: MGMEvent(name: "event1"))
+
+        let expectation = self.expectation(description: "Retry success")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(self.storage.eventCount(), 1)
+
+            // First flush - should fail and keep events
+            sdk.flush { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    XCTAssertEqual(self.storage.eventCount(), 1, "Events should be kept after first failure")
+
+                    // Second flush - should succeed and remove events
+                    sdk.flush { _ in
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            XCTAssertEqual(self.storage.eventCount(), 0, "Events should be removed after retry success")
+                            expectation.fulfill()
+                        }
+                    }
+                }
+            }
+        }
+
+        waitForExpectations(timeout: 10)
+    }
+
+    // MARK: - Edge Cases
+
+    func testFlushWithEmptyStorageDoesNothing() {
+        let mockNetwork = MockNetworkClient(result: .success(()))
+        let sdk = MostlyGoodMetrics(configuration: configuration, storage: storage, networkClient: mockNetwork)
+
+        let expectation = self.expectation(description: "Empty flush")
+
+        XCTAssertEqual(storage.eventCount(), 0)
+
+        sdk.flush { result in
+            switch result {
+            case .success:
+                XCTAssertEqual(mockNetwork.sendCount, 0, "Should not send when storage is empty")
+            case .failure:
+                XCTFail("Empty flush should not fail")
+            }
+            expectation.fulfill()
+        }
+
+        waitForExpectations(timeout: 5)
+    }
+
+    func testNewEventsAddedDuringRetryArePreserved() {
+        let mockNetwork = MockNetworkClient(result: .failure(.networkError(NSError(domain: "test", code: -1, userInfo: nil))))
+        let sdk = MostlyGoodMetrics(configuration: configuration, storage: storage, networkClient: mockNetwork)
+
+        storage.store(event: MGMEvent(name: "event1"))
+
+        let expectation = self.expectation(description: "New events preserved")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            sdk.flush { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    // Add another event after failed flush
+                    self.storage.store(event: MGMEvent(name: "event2"))
+
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        XCTAssertEqual(self.storage.eventCount(), 2, "Both events should be in storage")
+                        expectation.fulfill()
+                    }
+                }
+            }
+        }
+
+        waitForExpectations(timeout: 5)
+    }
+}
+
+// MARK: - Mock Network Clients
+
+/// Mock network client that always returns the same result
+class MockNetworkClient: NetworkClientProtocol {
+    private let result: Result<Void, MGMError>
+    private(set) var sendCount = 0
+
+    init(result: Result<Void, MGMError>) {
+        self.result = result
+    }
+
+    func sendEvents(_ events: [MGMEvent], context: MGMEventContext?, completion: @escaping (Result<Void, MGMError>) -> Void) {
+        sendCount += 1
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            completion(self.result)
+        }
+    }
+}
+
+/// Mock network client that returns results in sequence
+class SequentialMockNetworkClient: NetworkClientProtocol {
+    private let results: [Result<Void, MGMError>]
+    private var callIndex = 0
+
+    init(results: [Result<Void, MGMError>]) {
+        self.results = results
+    }
+
+    func sendEvents(_ events: [MGMEvent], context: MGMEventContext?, completion: @escaping (Result<Void, MGMError>) -> Void) {
+        let result = callIndex < results.count ? results[callIndex] : results.last!
+        callIndex += 1
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            completion(result)
+        }
+    }
+}

@@ -15,7 +15,7 @@ public final class MostlyGoodMetrics {
 
     private let configuration: MGMConfiguration
     private let storage: EventStorage
-    private let networkClient: NetworkClient
+    private let networkClient: NetworkClientProtocol
 
     private var flushTimer: Timer?
     private let flushQueue = DispatchQueue(label: "com.mostlygoodmetrics.flush")
@@ -93,6 +93,18 @@ public final class MostlyGoodMetrics {
         startFlushTimer()
         setupAppLifecycleObservers()
         // Skip auto-tracking for test instances
+    }
+
+    /// Internal initializer for testing with custom storage and network client
+    internal init(configuration: MGMConfiguration, storage: EventStorage, networkClient: NetworkClientProtocol) {
+        self.configuration = configuration
+        self.storage = storage
+        self.networkClient = networkClient
+
+        self.userId = nil
+        self.sessionId = UUID().uuidString
+
+        // Skip timers and lifecycle observers for test instances
     }
 
     deinit {
