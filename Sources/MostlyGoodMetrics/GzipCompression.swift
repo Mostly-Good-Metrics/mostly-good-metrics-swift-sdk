@@ -1,6 +1,6 @@
 import Foundation
-#if canImport(Compression)
-import Compression
+#if canImport(zlib)
+import zlib
 #endif
 
 /// Utility for gzip compression following RFC 1952
@@ -10,64 +10,51 @@ enum GzipCompression {
     /// - Parameter data: The data to compress
     /// - Returns: Gzip-compressed data, or nil if compression fails
     static func compress(_ data: Data) -> Data? {
-        #if canImport(Compression)
+        #if canImport(zlib)
         guard !data.isEmpty else { return nil }
 
-        // Allocate buffer for compressed data (worst case: slightly larger than input)
-        let bufferSize = data.count + 512
-        let destinationBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
-        defer { destinationBuffer.deallocate() }
+        var stream = z_stream()
 
-        let compressedSize = data.withUnsafeBytes { sourceBuffer -> Int in
-            guard let sourcePtr = sourceBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                return 0
+        // Initialize for gzip encoding (windowBits 15 + 16 = gzip format)
+        let initResult = deflateInit2_(
+            &stream,
+            Z_DEFAULT_COMPRESSION,
+            Z_DEFLATED,
+            MAX_WBITS + 16, // 15 + 16 = gzip format
+            MAX_MEM_LEVEL,
+            Z_DEFAULT_STRATEGY,
+            ZLIB_VERSION,
+            Int32(MemoryLayout<z_stream>.size)
+        )
+
+        guard initResult == Z_OK else { return nil }
+        defer { deflateEnd(&stream) }
+
+        // Allocate output buffer
+        let bufferSize = deflateBound(&stream, UInt(data.count))
+        var outputBuffer = [UInt8](repeating: 0, count: Int(bufferSize))
+
+        // Compress the data
+        let result: Int32 = data.withUnsafeBytes { inputBuffer in
+            outputBuffer.withUnsafeMutableBufferPointer { outputBufferPtr in
+                guard let inputPtr = inputBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                      let outputPtr = outputBufferPtr.baseAddress else {
+                    return Z_DATA_ERROR
+                }
+
+                stream.next_in = UnsafeMutablePointer(mutating: inputPtr)
+                stream.avail_in = UInt32(data.count)
+                stream.next_out = outputPtr
+                stream.avail_out = UInt32(bufferSize)
+
+                return deflate(&stream, Z_FINISH)
             }
-            return compression_encode_buffer(
-                destinationBuffer,
-                bufferSize,
-                sourcePtr,
-                data.count,
-                nil,
-                COMPRESSION_ZLIB
-            )
         }
 
-        guard compressedSize > 0 else { return nil }
+        guard result == Z_STREAM_END else { return nil }
 
-        // Build proper gzip format
-        var gzipData = Data()
-        gzipData.reserveCapacity(compressedSize + 18) // header (10) + trailer (8)
-
-        // Gzip header (10 bytes)
-        gzipData.append(contentsOf: [
-            0x1f, 0x8b,             // Magic number
-            0x08,                   // Compression method (deflate)
-            0x00,                   // Flags (none)
-            0x00, 0x00, 0x00, 0x00, // Modification time (none)
-            0x00,                   // Extra flags
-            0xff                    // OS (unknown)
-        ])
-
-        // Compressed data (raw deflate from COMPRESSION_ZLIB)
-        gzipData.append(destinationBuffer, count: compressedSize)
-
-        // Gzip trailer (8 bytes)
-        let crcValue = crc32(data)
-        let size = UInt32(truncatingIfNeeded: data.count)
-
-        // CRC32 (little-endian)
-        gzipData.append(UInt8(crcValue & 0xff))
-        gzipData.append(UInt8((crcValue >> 8) & 0xff))
-        gzipData.append(UInt8((crcValue >> 16) & 0xff))
-        gzipData.append(UInt8((crcValue >> 24) & 0xff))
-
-        // Original size mod 2^32 (little-endian)
-        gzipData.append(UInt8(size & 0xff))
-        gzipData.append(UInt8((size >> 8) & 0xff))
-        gzipData.append(UInt8((size >> 16) & 0xff))
-        gzipData.append(UInt8((size >> 24) & 0xff))
-
-        return gzipData
+        let compressedSize = Int(bufferSize) - Int(stream.avail_out)
+        return Data(outputBuffer.prefix(compressedSize))
         #else
         return nil
         #endif
