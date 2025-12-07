@@ -15,47 +15,49 @@ Add the following to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/your-org/mostly-good-metrics-swift", from: "1.0.0")
+    .package(url: "https://github.com/Mostly-Good-Metrics/mostly-good-metrics-swift-sdk", from: "1.0.0")
 ]
 ```
 
-Or in Xcode: File > Add Package Dependencies and enter the repository URL.
+Or in Xcode: **File > Add Package Dependencies** and enter the repository URL.
 
 ## Quick Start
 
-### 1. Configure the SDK
+### 1. Initialize the SDK
 
-Initialize the SDK once at app launch (e.g., in `AppDelegate` or `@main` App struct):
+Initialize once at app launch (e.g., in `AppDelegate` or `@main` App struct):
 
 ```swift
 import MostlyGoodMetrics
 
-// Simple configuration
 MostlyGoodMetrics.configure(apiKey: "mgm_proj_your_api_key")
 ```
 
 ### 2. Track Events
 
 ```swift
-// Basic event
-MostlyGoodMetrics.track("app_opened")
+// Simple event
+MostlyGoodMetrics.track("button_clicked")
 
 // Event with properties
-MostlyGoodMetrics.track("button_clicked", properties: [
-    "screen": "home",
-    "button_id": "signup_cta"
+MostlyGoodMetrics.track("purchase_completed", properties: [
+    "product_id": "SKU123",
+    "price": 29.99,
+    "currency": "USD"
 ])
 ```
 
-### 3. Identify Users (Optional)
+### 3. Identify Users
 
 ```swift
-// After user logs in
+// Set user identity
 MostlyGoodMetrics.identify(userId: "user_123")
 
-// After user logs out
+// Reset identity (e.g., on logout)
 MostlyGoodMetrics.shared?.resetIdentity()
 ```
+
+That's it! Events are automatically batched and sent.
 
 ## Configuration Options
 
@@ -64,54 +66,113 @@ For more control, use `MGMConfiguration`:
 ```swift
 let config = MGMConfiguration(
     apiKey: "mgm_proj_your_api_key",
-    baseURL: URL(string: "https://mostlygoodmetrics.com")!,  // Custom API endpoint
-    environment: "production",      // "production", "staging", "development"
-    bundleId: nil,                  // Override bundle ID (optional)
-    maxBatchSize: 100,              // Events per batch (max 1000)
-    flushInterval: 30,              // Seconds between auto-flush
-    maxStoredEvents: 10000,         // Max cached events
-    enableDebugLogging: false,      // Enable console logging
-    trackAppLifecycleEvents: true   // Auto-track lifecycle events (default: true)
+    baseURL: URL(string: "https://mostlygoodmetrics.com")!,
+    environment: "production",
+    maxBatchSize: 100,
+    flushInterval: 30,
+    maxStoredEvents: 10000,
+    enableDebugLogging: false,
+    trackAppLifecycleEvents: true
 )
 
 MostlyGoodMetrics.configure(with: config)
 ```
 
-## API Reference
+| Option | Default | Description |
+|--------|---------|-------------|
+| `apiKey` | Required | Your API key |
+| `baseURL` | `https://mostlygoodmetrics.com` | API endpoint |
+| `environment` | `"production"` | Environment name |
+| `bundleId` | App's bundle ID | Override bundle identifier |
+| `maxBatchSize` | `100` | Events per batch (1-1000) |
+| `flushInterval` | `30` | Auto-flush interval in seconds |
+| `maxStoredEvents` | `10000` | Max cached events |
+| `enableDebugLogging` | `false` | Enable console output |
+| `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
 
-### MostlyGoodMetrics
+## Automatic Events
 
-| Method | Description |
-|--------|-------------|
-| `configure(apiKey:)` | Initialize with API key using defaults |
-| `configure(with:)` | Initialize with custom configuration |
-| `track(_:properties:)` | Track an event with optional properties |
-| `identify(userId:)` | Set the user ID for subsequent events |
-| `resetIdentity()` | Clear the current user ID |
-| `startNewSession()` | Start a new session |
-| `flush(completion:)` | Manually send pending events |
-| `clearPendingEvents()` | Discard all pending events |
-| `pendingEventCount` | Number of events waiting to be sent |
+When `trackAppLifecycleEvents` is enabled (default), the SDK automatically tracks:
 
-### Event Names
+| Event | When | Properties |
+|-------|------|------------|
+| `$app_installed` | First launch after install | `$version` |
+| `$app_updated` | First launch after version change | `$version`, `$previous_version` |
+| `$app_opened` | App became active (foreground) | - |
+| `$app_backgrounded` | App resigned active (background) | - |
+
+## Automatic Context
+
+Every event automatically includes:
+
+| Field | Example | Description |
+|-------|---------|-------------|
+| `platform` | `"ios"` | Platform (ios, macos, tvos, watchos, visionos) |
+| `os_version` | `"17.1"` | Operating system version |
+| `app_version` | `"1.0.0 (42)"` | App version with build number |
+| `environment` | `"production"` | Environment from configuration |
+| `session_id` | `"uuid..."` | Unique session ID (per app launch) |
+| `user_id` | `"user_123"` | User ID (if set via `identify()`) |
+| `$device_type` | `"phone"` | Device type (phone, tablet, desktop, tv, watch, vision) |
+| `$device_model` | `"iPhone15,2"` | Device model identifier |
+
+> **Note:** The `$` prefix indicates reserved system events and properties. Avoid using `$` prefix for your own custom events.
+
+## Event Naming
 
 Event names must:
-- Start with a letter (a-z, A-Z)
+- Start with a letter (or `$` for system events)
 - Contain only alphanumeric characters and underscores
 - Be 255 characters or less
 
-Examples: `app_opened`, `buttonClicked`, `purchase_completed`
+```swift
+// Valid
+MostlyGoodMetrics.track("button_clicked")
+MostlyGoodMetrics.track("PurchaseCompleted")
+MostlyGoodMetrics.track("step_1_completed")
 
-### Event Properties
+// Invalid (will be ignored)
+MostlyGoodMetrics.track("123_event")      // starts with number
+MostlyGoodMetrics.track("event-name")     // contains hyphen
+MostlyGoodMetrics.track("event name")     // contains space
+```
 
-Properties support:
-- Strings (truncated to 1000 chars)
-- Numbers (Int, Double)
-- Booleans
-- Nested dictionaries (max 3 levels deep)
-- Arrays
+## Properties
 
-Total properties size limit: 10KB
+Events support various property types:
+
+```swift
+MostlyGoodMetrics.track("checkout", properties: [
+    "string_prop": "value",
+    "int_prop": 42,
+    "double_prop": 3.14,
+    "bool_prop": true,
+    "list_prop": ["a", "b", "c"],
+    "nested": [
+        "key": "value"
+    ]
+])
+```
+
+**Limits:**
+- String values: truncated to 1000 characters
+- Nesting depth: max 3 levels
+- Total properties size: max 10KB
+
+## Manual Flush
+
+Events are automatically flushed periodically and when the app backgrounds. You can also trigger a manual flush:
+
+```swift
+MostlyGoodMetrics.shared?.flush { result in
+    switch result {
+    case .success:
+        print("Events flushed successfully")
+    case .failure(let error):
+        print("Flush failed: \(error.localizedDescription)")
+    }
+}
+```
 
 ## Automatic Behavior
 
@@ -127,54 +188,9 @@ The SDK automatically:
 - **Persists user ID** across app launches
 - **Generates session IDs** per app launch
 
-## Automatic Lifecycle Events
-
-By default, the SDK automatically tracks these lifecycle events (disable with `trackAppLifecycleEvents: false`):
-
-| Event | When | Properties |
-|-------|------|------------|
-| `$app_installed` | First launch ever | `$version` |
-| `$app_updated` | First launch after version change | `$version`, `$previous_version` |
-| `$app_opened` | App becomes active (foreground) | - |
-| `$app_backgrounded` | App resigns active (background) | - |
-
-## Automatic Context
-
-Every event automatically includes:
-
-| Field | Example | Description |
-|-------|---------|-------------|
-| `platform` | `"ios"` | Platform (ios, macos, tvos, watchos, visionos) |
-| `os_version` | `"17.1"` | Operating system version |
-| `app_version` | `"1.0.0 (42)"` | App version with build number |
-| `environment` | `"production"` | Environment from configuration |
-| `session_id` | `"uuid..."` | Unique session ID (per app launch) |
-| `user_id` | `"user_123"` | User ID (if set via `identify()`) |
-
-Additionally, every event includes these system properties:
-
-| Property | Example | Description |
-|----------|---------|-------------|
-| `$device_type` | `"phone"` | Device type (phone, tablet, desktop, tv, watch, vision) |
-| `$device_model` | `"iPhone15,2"` | Device model identifier |
-
-> **Note:** The `$` prefix indicates reserved system events and properties. Avoid using `$` prefix for your own custom events.
-
-## Multiple Instances
-
-While the shared instance covers most use cases, you can create separate instances:
-
-```swift
-let analytics = MostlyGoodMetrics(configuration: MGMConfiguration(
-    apiKey: "mgm_proj_different_key"
-))
-
-analytics.track("custom_event")
-```
-
 ## Debug Logging
 
-Enable debug logging to see SDK activity in the console:
+Enable debug logging to see SDK activity:
 
 ```swift
 let config = MGMConfiguration(
@@ -187,32 +203,14 @@ MostlyGoodMetrics.configure(with: config)
 Output example:
 ```
 [MostlyGoodMetrics] Initialized with 3 cached events
-[MostlyGoodMetrics] Tracked event: app_opened
+[MostlyGoodMetrics] Tracked event: button_clicked
 [MostlyGoodMetrics] Flushing 4 events
 [MostlyGoodMetrics] Successfully flushed 4 events
 ```
 
-## Error Handling
+## Thread Safety
 
-The SDK is designed to never crash your app. Errors are handled gracefully:
-
-- **Invalid event names** are silently dropped (logged in debug mode)
-- **Network failures** preserve events for retry
-- **Rate limiting** respects server backoff
-- **Client errors (4xx)** drop invalid events to prevent loops
-
-For manual flush with error handling:
-
-```swift
-MostlyGoodMetrics.shared?.flush { result in
-    switch result {
-    case .success:
-        print("Events sent successfully")
-    case .failure(let error):
-        print("Flush failed: \(error.localizedDescription)")
-    }
-}
-```
+The SDK is fully thread-safe. You can call `track()` from any thread.
 
 ## License
 
