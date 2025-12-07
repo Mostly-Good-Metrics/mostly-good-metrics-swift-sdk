@@ -1,0 +1,63 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Show Swift Version
+        run: swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Run Tests
+        run: swift test
+
+  build-platforms:
+    name: Build for ${{ matrix.platform }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: iOS
+            destination: "platform=iOS Simulator,name=iPhone 15,OS=latest"
+          - platform: macOS
+            destination: "platform=macOS"
+          - platform: tvOS
+            destination: "platform=tvOS Simulator,name=Apple TV,OS=latest"
+          - platform: watchOS
+            destination: "platform=watchOS Simulator,name=Apple Watch Series 9 (45mm),OS=latest"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Build for ${{ matrix.platform }}
+        run: |
+          xcodebuild build \
+            -scheme MostlyGoodMetrics \
+            -destination "${{ matrix.destination }}" \
+            -skipPackagePluginValidation \
+            | xcpretty && exit ${PIPESTATUS[0]}

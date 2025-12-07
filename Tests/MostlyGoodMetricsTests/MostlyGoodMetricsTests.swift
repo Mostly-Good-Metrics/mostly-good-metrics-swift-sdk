@@ -29,6 +29,7 @@ final class MostlyGoodMetricsTests: XCTestCase {
         XCTAssertEqual(config.flushInterval, 30)
         XCTAssertEqual(config.maxStoredEvents, 10000)
         XCTAssertFalse(config.enableDebugLogging)
+        XCTAssertTrue(config.trackAppLifecycleEvents)
     }
 
     func testConfigurationCustomValues() {
@@ -41,7 +42,8 @@ final class MostlyGoodMetricsTests: XCTestCase {
             maxBatchSize: 50,
             flushInterval: 60,
             maxStoredEvents: 5000,
-            enableDebugLogging: true
+            enableDebugLogging: true,
+            trackAppLifecycleEvents: false
         )
 
         XCTAssertEqual(config.apiKey, "custom_key")
@@ -52,6 +54,7 @@ final class MostlyGoodMetricsTests: XCTestCase {
         XCTAssertEqual(config.flushInterval, 60)
         XCTAssertEqual(config.maxStoredEvents, 5000)
         XCTAssertTrue(config.enableDebugLogging)
+        XCTAssertFalse(config.trackAppLifecycleEvents)
     }
 
     func testMaxBatchSizeClamping() {
@@ -60,6 +63,31 @@ final class MostlyGoodMetricsTests: XCTestCase {
 
         let config2 = MGMConfiguration(apiKey: "key", maxBatchSize: 0)
         XCTAssertEqual(config2.maxBatchSize, 1)
+
+        let config3 = MGMConfiguration(apiKey: "key", maxBatchSize: -10)
+        XCTAssertEqual(config3.maxBatchSize, 1)
+    }
+
+    func testFlushIntervalMinimum() {
+        let config1 = MGMConfiguration(apiKey: "key", flushInterval: 0)
+        XCTAssertEqual(config1.flushInterval, 1)
+
+        let config2 = MGMConfiguration(apiKey: "key", flushInterval: -10)
+        XCTAssertEqual(config2.flushInterval, 1)
+
+        let config3 = MGMConfiguration(apiKey: "key", flushInterval: 120)
+        XCTAssertEqual(config3.flushInterval, 120)
+    }
+
+    func testMaxStoredEventsMinimum() {
+        let config1 = MGMConfiguration(apiKey: "key", maxStoredEvents: 50)
+        XCTAssertEqual(config1.maxStoredEvents, 100)
+
+        let config2 = MGMConfiguration(apiKey: "key", maxStoredEvents: 0)
+        XCTAssertEqual(config2.maxStoredEvents, 100)
+
+        let config3 = MGMConfiguration(apiKey: "key", maxStoredEvents: 5000)
+        XCTAssertEqual(config3.maxStoredEvents, 5000)
     }
 
     // MARK: - Event Tests
@@ -110,6 +138,105 @@ final class MostlyGoodMetricsTests: XCTestCase {
         XCTAssertNotNil(json?["timestamp"])
     }
 
+    func testEventTimestampFormat() throws {
+        let event = MGMEvent(name: "test")
+
+        // Timestamp should be a valid date
+        XCTAssertNotNil(event.timestamp)
+
+        // When encoded, should be ISO 8601 format with Z suffix
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(event)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let timestampStr = json?["timestamp"] as? String
+
+        XCTAssertNotNil(timestampStr)
+        XCTAssertTrue(timestampStr!.contains("T"))
+        XCTAssertTrue(timestampStr!.hasSuffix("Z"))
+    }
+
+    func testEventPropertiesWithNestedObjects() throws {
+        let properties: [String: Any] = [
+            "user": [
+                "name": "John",
+                "age": 30
+            ]
+        ]
+        let event = MGMEvent(name: "test", properties: properties)
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(event)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        let props = json?["properties"] as? [String: Any]
+        let user = props?["user"] as? [String: Any]
+
+        XCTAssertNotNil(user)
+        XCTAssertEqual(user?["name"] as? String, "John")
+        XCTAssertEqual(user?["age"] as? Int, 30)
+    }
+
+    func testEventPropertiesWithArrays() throws {
+        let properties: [String: Any] = [
+            "tags": ["a", "b", "c"]
+        ]
+        let event = MGMEvent(name: "test", properties: properties)
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(event)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        let props = json?["properties"] as? [String: Any]
+        let tags = props?["tags"] as? [String]
+
+        XCTAssertNotNil(tags)
+        XCTAssertEqual(tags, ["a", "b", "c"])
+    }
+
+    // MARK: - Event Name Validation Tests
+
+    func testValidEventNames() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        // These should be accepted
+        client.track("valid_event")
+        client.track("ValidEvent")
+        client.track("event123")
+        client.track("a")
+        client.track("$app_opened")  // System event
+        client.track("$custom_system")
+
+        let expectation = self.expectation(description: "Valid events")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(storage.eventCount(), 6)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testInvalidEventNameRejected() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        // These should be rejected
+        client.track("123invalid") // starts with number
+        client.track("invalid-name") // contains hyphen
+        client.track("") // empty
+        client.track(String(repeating: "a", count: 300)) // too long
+        client.track("event name") // contains space
+        client.track("event.name") // contains dot
+
+        let expectation = self.expectation(description: "Invalid events")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(storage.eventCount(), 0)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
     // MARK: - Storage Tests
 
     func testInMemoryStorage() {
@@ -125,6 +252,68 @@ final class MostlyGoodMetricsTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             XCTAssertEqual(storage.eventCount(), 1)
             expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testStorageFetchesEventsInOrder() {
+        let storage = InMemoryEventStorage(maxEvents: 100)
+
+        storage.store(event: MGMEvent(name: "event_1"))
+        storage.store(event: MGMEvent(name: "event_2"))
+        storage.store(event: MGMEvent(name: "event_3"))
+
+        let expectation = self.expectation(description: "Storage order")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 10)
+            XCTAssertEqual(events.count, 3)
+            XCTAssertEqual(events[0].name, "event_1")
+            XCTAssertEqual(events[1].name, "event_2")
+            XCTAssertEqual(events[2].name, "event_3")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testStorageFetchLimit() {
+        let storage = InMemoryEventStorage(maxEvents: 100)
+
+        for i in 0..<10 {
+            storage.store(event: MGMEvent(name: "event_\(i)"))
+        }
+
+        let expectation = self.expectation(description: "Storage fetch limit")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 5)
+            XCTAssertEqual(events.count, 5)
+            XCTAssertEqual(events[0].name, "event_0")
+            XCTAssertEqual(events[4].name, "event_4")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testStorageRemoveEvents() {
+        let storage = InMemoryEventStorage(maxEvents: 100)
+
+        let event1 = MGMEvent(name: "event_1")
+        let event2 = MGMEvent(name: "event_2")
+        let event3 = MGMEvent(name: "event_3")
+
+        storage.store(event: event1)
+        storage.store(event: event2)
+        storage.store(event: event3)
+
+        let expectation = self.expectation(description: "Storage remove")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            storage.removeEvents([event1, event2])
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                XCTAssertEqual(storage.eventCount(), 1)
+                let remaining = storage.fetchEvents(limit: 10)
+                XCTAssertEqual(remaining.first?.name, "event_3")
+                expectation.fulfill()
+            }
         }
         waitForExpectations(timeout: 1)
     }
@@ -167,6 +356,32 @@ final class MostlyGoodMetricsTests: XCTestCase {
         waitForExpectations(timeout: 1)
     }
 
+    func testStorageThreadSafety() {
+        let storage = InMemoryEventStorage(maxEvents: 1000)
+        let group = DispatchGroup()
+
+        // Add events from multiple threads concurrently
+        for threadId in 0..<10 {
+            group.enter()
+            DispatchQueue.global().async {
+                for i in 0..<100 {
+                    storage.store(event: MGMEvent(name: "thread\(threadId)_event\(i)"))
+                }
+                group.leave()
+            }
+        }
+
+        let expectation = self.expectation(description: "Thread safety")
+        group.notify(queue: .main) {
+            // All 1000 events should be stored
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                XCTAssertEqual(storage.eventCount(), 1000)
+                expectation.fulfill()
+            }
+        }
+        waitForExpectations(timeout: 5)
+    }
+
     // MARK: - Client Tests
 
     func testClientInitialization() {
@@ -176,6 +391,7 @@ final class MostlyGoodMetricsTests: XCTestCase {
 
         XCTAssertNotNil(client.sessionId)
         XCTAssertNil(client.userId)
+        XCTAssertFalse(client.sessionId.isEmpty)
     }
 
     func testClientTrack() {
@@ -192,6 +408,23 @@ final class MostlyGoodMetricsTests: XCTestCase {
             let events = storage.fetchEvents(limit: 1)
             XCTAssertEqual(events.first?.name, "test_event")
             XCTAssertEqual(events.first?.sessionId, client.sessionId)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testClientTrackWithoutProperties() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.track("simple_event")
+
+        let expectation = self.expectation(description: "Track simple")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(storage.eventCount(), 1)
+            let events = storage.fetchEvents(limit: 1)
+            XCTAssertEqual(events.first?.name, "simple_event")
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1)
@@ -216,6 +449,17 @@ final class MostlyGoodMetricsTests: XCTestCase {
         waitForExpectations(timeout: 1)
     }
 
+    func testClientIdentifyPersistsToUserDefaults() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.identify(userId: "persistent_user")
+
+        let storedUserId = UserDefaults.standard.string(forKey: "MGM_userId")
+        XCTAssertEqual(storedUserId, "persistent_user")
+    }
+
     func testClientResetIdentity() {
         let config = MGMConfiguration(apiKey: "test_key")
         let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
@@ -225,6 +469,9 @@ final class MostlyGoodMetricsTests: XCTestCase {
 
         client.resetIdentity()
         XCTAssertNil(client.userId)
+
+        let storedUserId = UserDefaults.standard.string(forKey: "MGM_userId")
+        XCTAssertNil(storedUserId)
     }
 
     func testClientNewSession() {
@@ -235,41 +482,95 @@ final class MostlyGoodMetricsTests: XCTestCase {
         client.startNewSession()
 
         XCTAssertNotEqual(client.sessionId, originalSessionId)
+        XCTAssertFalse(client.sessionId.isEmpty)
     }
 
-    func testInvalidEventNameRejected() {
+    func testClientPendingEventCount() {
         let config = MGMConfiguration(apiKey: "test_key")
         let storage = InMemoryEventStorage()
         let client = MostlyGoodMetrics(configuration: config, storage: storage)
 
-        // These should be rejected
-        client.track("123invalid") // starts with number
-        client.track("invalid-name") // contains hyphen
-        client.track("") // empty
-        client.track(String(repeating: "a", count: 300)) // too long
+        XCTAssertEqual(client.pendingEventCount, 0)
 
-        let expectation = self.expectation(description: "Invalid events")
+        client.track("event1")
+        client.track("event2")
+
+        let expectation = self.expectation(description: "Pending count")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            XCTAssertEqual(storage.eventCount(), 0)
+            XCTAssertEqual(client.pendingEventCount, 2)
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1)
     }
 
-    func testValidEventNames() {
+    func testClientClearPendingEvents() {
         let config = MGMConfiguration(apiKey: "test_key")
         let storage = InMemoryEventStorage()
         let client = MostlyGoodMetrics(configuration: config, storage: storage)
 
-        // These should be accepted
-        client.track("valid_event")
-        client.track("ValidEvent")
-        client.track("event123")
-        client.track("a")
+        client.track("event1")
+        client.track("event2")
 
-        let expectation = self.expectation(description: "Valid events")
+        let expectation = self.expectation(description: "Clear pending")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            XCTAssertEqual(storage.eventCount(), 4)
+            XCTAssertEqual(client.pendingEventCount, 2)
+
+            client.clearPendingEvents()
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                XCTAssertEqual(client.pendingEventCount, 0)
+                expectation.fulfill()
+            }
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testClientEventsIncludeSessionId() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "Session ID")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            XCTAssertEqual(events.first?.sessionId, client.sessionId)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testClientEventsIncludePlatform() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "Platform")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            XCTAssertNotNil(events.first?.platform)
+            // Platform should be one of: ios, macos, tvos, watchos, visionos
+            let validPlatforms = ["ios", "macos", "tvos", "watchos", "visionos", "unknown"]
+            XCTAssertTrue(validPlatforms.contains(events.first?.platform ?? ""))
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testClientEventsIncludeEnvironment() {
+        let config = MGMConfiguration(apiKey: "test_key", environment: "staging")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "Environment")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            XCTAssertEqual(events.first?.environment, "staging")
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1)
@@ -279,6 +580,13 @@ final class MostlyGoodMetricsTests: XCTestCase {
 
     func testSharedInstanceConfiguration() {
         MostlyGoodMetrics.configure(apiKey: "shared_key")
+
+        XCTAssertNotNil(MostlyGoodMetrics.shared)
+    }
+
+    func testSharedInstanceConfigureWithConfiguration() {
+        let config = MGMConfiguration(apiKey: "custom_key", environment: "test")
+        MostlyGoodMetrics.configure(with: config)
 
         XCTAssertNotNil(MostlyGoodMetrics.shared)
     }
@@ -294,6 +602,77 @@ final class MostlyGoodMetricsTests: XCTestCase {
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1)
+    }
+
+    func testStaticTrackWithProperties() {
+        MostlyGoodMetrics.configure(apiKey: "test_key")
+
+        MostlyGoodMetrics.track("static_event", properties: ["key": "value"])
+
+        let expectation = self.expectation(description: "Static track with props")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertGreaterThan(MostlyGoodMetrics.shared?.pendingEventCount ?? 0, 0)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testStaticIdentify() {
+        MostlyGoodMetrics.configure(apiKey: "test_key")
+
+        MostlyGoodMetrics.identify(userId: "static_user")
+
+        XCTAssertEqual(MostlyGoodMetrics.shared?.userId, "static_user")
+    }
+
+    func testStaticFlush() {
+        MostlyGoodMetrics.configure(apiKey: "test_key")
+        MostlyGoodMetrics.track("event")
+
+        // Should not throw
+        MostlyGoodMetrics.flush()
+    }
+
+    // MARK: - Flush Tests
+
+    func testFlushWithCompletion() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        let expectation = self.expectation(description: "Flush completion")
+
+        client.flush { result in
+            // Should complete (even without events)
+            switch result {
+            case .success:
+                expectation.fulfill()
+            case .failure:
+                expectation.fulfill()
+            }
+        }
+
+        waitForExpectations(timeout: 5)
+    }
+
+    func testFlushWithNoEvents() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        let expectation = self.expectation(description: "Flush no events")
+
+        client.flush { result in
+            switch result {
+            case .success:
+                // Should succeed with no events
+                expectation.fulfill()
+            case .failure:
+                XCTFail("Should not fail with no events")
+            }
+        }
+
+        waitForExpectations(timeout: 5)
     }
 }
 
@@ -352,5 +731,82 @@ final class AnyCodableTests: XCTestCase {
 
         // Should be truncated to 1000 chars + quotes
         XCTAssertEqual(decoded.count, 1002)
+    }
+
+    func testEncodeNestedDictionary() throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+
+        let nested: [String: Any] = [
+            "user": [
+                "name": "John",
+                "age": 30
+            ] as [String: Any]
+        ]
+        let codable = AnyCodable(nested)
+
+        let data = try encoder.encode(codable)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        XCTAssertNotNil(json)
+        let user = json?["user"] as? [String: Any]
+        XCTAssertEqual(user?["name"] as? String, "John")
+        XCTAssertEqual(user?["age"] as? Int, 30)
+    }
+
+    func testEncodeNil() throws {
+        let encoder = JSONEncoder()
+        let nilCodable = AnyCodable(NSNull())
+
+        let data = try encoder.encode(nilCodable)
+        let json = String(data: data, encoding: .utf8)
+
+        XCTAssertEqual(json, "null")
+    }
+}
+
+// MARK: - MGMError Tests
+
+final class MGMErrorTests: XCTestCase {
+
+    func testNetworkErrorDescription() {
+        let underlyingError = NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey: "Connection failed"])
+        let error = MGMError.networkError(underlyingError)
+
+        XCTAssertTrue(error.localizedDescription.contains("Network error"))
+    }
+
+    func testUnauthorizedErrorDescription() {
+        let error = MGMError.unauthorized
+
+        XCTAssertTrue(error.localizedDescription.contains("Invalid") || error.localizedDescription.contains("API key"))
+    }
+
+    func testRateLimitedErrorDescription() {
+        let error = MGMError.rateLimited(retryAfter: 60)
+
+        XCTAssertTrue(error.localizedDescription.contains("Rate limited"))
+        XCTAssertTrue(error.localizedDescription.contains("60"))
+    }
+
+    func testServerErrorDescription() {
+        let error = MGMError.serverError(500, "Internal server error")
+
+        XCTAssertTrue(error.localizedDescription.contains("500"))
+        XCTAssertTrue(error.localizedDescription.contains("Internal server error"))
+    }
+
+    func testBadRequestErrorDescription() {
+        let error = MGMError.badRequest("Invalid event format")
+
+        XCTAssertTrue(error.localizedDescription.contains("Bad request"))
+        XCTAssertTrue(error.localizedDescription.contains("Invalid event format"))
+    }
+
+    func testInvalidEventNameErrorDescription() {
+        let error = MGMError.invalidEventName("123invalid")
+
+        XCTAssertTrue(error.localizedDescription.contains("Invalid event name"))
+        XCTAssertTrue(error.localizedDescription.contains("123invalid"))
     }
 }
