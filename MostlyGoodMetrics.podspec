@@ -8,10 +8,10 @@ Pod::Spec.new do |s|
     and batch uploading capabilities.
   DESC
 
-  s.homepage         = 'https://github.com/joshholtz/mostly-good-metrics'
+  s.homepage         = 'https://github.com/Mostly-Good-Metrics/mostly-good-metrics-swift-sdk'
   s.license          = { :type => 'MIT', :file => 'LICENSE' }
   s.author           = { 'Josh Holtz' => 'josh@joshholtz.com' }
-  s.source           = { :git => 'https://github.com/joshholtz/mostly-good-metrics.git', :tag => s.version.to_s }
+  s.source           = { :git => 'https://github.com/Mostly-Good-Metrics/mostly-good-metrics-swift-sdk.git', :tag => s.version.to_s }
 
   s.ios.deployment_target = '14.0'
   s.osx.deployment_target = '11.0'
@@ -20,7 +20,7 @@ Pod::Spec.new do |s|
 
   s.swift_version = '5.9'
 
-  s.source_files = 'swift-sdk/Sources/MostlyGoodMetrics/**/*.swift'
+  s.source_files = 'Sources/MostlyGoodMetrics/**/*.swift'
 
   s.frameworks = 'Foundation'
   s.ios.frameworks = 'UIKit'
