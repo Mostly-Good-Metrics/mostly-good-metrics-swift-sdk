@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
 
   s.homepage         = 'https://github.com/Mostly-Good-Metrics/mostly-good-metrics-swift-sdk'
   s.license          = { :type => 'MIT', :file => 'LICENSE' }
-  s.author           = { 'Josh Holtz' => 'josh@joshholtz.com' }
+  s.author           = { 'Josh Holtz' => 'me@joshholtz.com' }
   s.source           = { :git => 'https://github.com/Mostly-Good-Metrics/mostly-good-metrics-swift-sdk.git', :tag => s.version.to_s }
 
   s.ios.deployment_target = '14.0'
