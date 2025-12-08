@@ -1,4 +1,15 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
+#if canImport(WatchKit)
+import WatchKit
+#endif
+
+/// SDK version for User-Agent header
+internal let sdkVersion = "0.1.0"
 
 /// Protocol for network operations (allows mocking in tests)
 protocol NetworkClientProtocol {
@@ -51,6 +62,7 @@ final class NetworkClient: NetworkClientProtocol {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(configuration.apiKey, forHTTPHeaderField: "X-MGM-Key")
+        request.setValue(buildUserAgent(), forHTTPHeaderField: "User-Agent")
 
         // Set bundle ID if available
         let bundleId = configuration.bundleId ?? Bundle.main.bundleIdentifier
@@ -163,6 +175,40 @@ final class NetworkClient: NetworkClientProtocol {
         if configuration.enableDebugLogging {
             print("[MostlyGoodMetrics] \(message)")
         }
+    }
+
+    private func buildUserAgent() -> String {
+        let platform = currentPlatform
+        let osVersion = currentOSVersion
+        return "MostlyGoodMetrics/\(sdkVersion) (\(platform); OS \(osVersion))"
+    }
+
+    private var currentPlatform: String {
+        #if os(iOS)
+        return "iOS"
+        #elseif os(macOS)
+        return "macOS"
+        #elseif os(tvOS)
+        return "tvOS"
+        #elseif os(watchOS)
+        return "watchOS"
+        #elseif os(visionOS)
+        return "visionOS"
+        #else
+        return "unknown"
+        #endif
+    }
+
+    private var currentOSVersion: String {
+        #if os(watchOS)
+        return WKInterfaceDevice.current().systemVersion
+        #elseif canImport(UIKit)
+        return UIDevice.current.systemVersion
+        #elseif canImport(AppKit)
+        return ProcessInfo.processInfo.operatingSystemVersionString
+        #else
+        return ProcessInfo.processInfo.operatingSystemVersionString
+        #endif
     }
 }
 
