@@ -70,6 +70,14 @@ final class NetworkClient: NetworkClientProtocol {
             request.setValue(bundleId, forHTTPHeaderField: "X-MGM-Bundle-Id")
         }
 
+        // Set wrapper headers if available
+        if let wrapperName = configuration.wrapperName {
+            request.setValue(wrapperName, forHTTPHeaderField: "X-MGM-Wrapper")
+        }
+        if let wrapperVersion = configuration.wrapperVersion {
+            request.setValue(wrapperVersion, forHTTPHeaderField: "X-MGM-Wrapper-Version")
+        }
+
         let payload = MGMEventsPayload(events: events, context: context)
 
         do {

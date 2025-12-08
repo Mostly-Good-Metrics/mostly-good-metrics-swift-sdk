@@ -30,6 +30,14 @@ public struct MGMConfiguration {
     /// Tracks: app_installed, app_updated, app_opened, app_backgrounded
     public var trackAppLifecycleEvents: Bool
 
+    /// The wrapper SDK name (e.g., "react-native", "flutter", "expo")
+    /// Used by hybrid framework SDKs to identify themselves
+    public var wrapperName: String?
+
+    /// The wrapper SDK version
+    /// Used by hybrid framework SDKs to identify their version
+    public var wrapperVersion: String?
+
     /// Default API base URL
     public static let defaultBaseURL = URL(string: "https://mostlygoodmetrics.com")!
 
@@ -44,6 +52,8 @@ public struct MGMConfiguration {
     ///   - maxStoredEvents: Maximum cached events (defaults to 10000)
     ///   - enableDebugLogging: Whether to enable debug logging (defaults to false)
     ///   - trackAppLifecycleEvents: Whether to auto-track lifecycle events (defaults to true)
+    ///   - wrapperName: Optional wrapper SDK name (e.g., "react-native", "flutter")
+    ///   - wrapperVersion: Optional wrapper SDK version
     public init(
         apiKey: String,
         baseURL: URL = MGMConfiguration.defaultBaseURL,
@@ -53,7 +63,9 @@ public struct MGMConfiguration {
         flushInterval: TimeInterval = 30,
         maxStoredEvents: Int = 10000,
         enableDebugLogging: Bool = false,
-        trackAppLifecycleEvents: Bool = true
+        trackAppLifecycleEvents: Bool = true,
+        wrapperName: String? = nil,
+        wrapperVersion: String? = nil
     ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
@@ -64,5 +76,7 @@ public struct MGMConfiguration {
         self.maxStoredEvents = max(100, maxStoredEvents)
         self.enableDebugLogging = enableDebugLogging
         self.trackAppLifecycleEvents = trackAppLifecycleEvents
+        self.wrapperName = wrapperName
+        self.wrapperVersion = wrapperVersion
     }
 }
