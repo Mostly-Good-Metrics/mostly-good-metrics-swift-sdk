@@ -463,7 +463,8 @@ public final class MostlyGoodMetrics {
 
     private var systemProperties: [String: Any] {
         var props: [String: Any] = [
-            "$device_type": deviceType
+            "$device_type": deviceType,
+            "$sdk": configuration.wrapperName ?? "swift"
         ]
         if let model = deviceModel {
             props["$device_model"] = model

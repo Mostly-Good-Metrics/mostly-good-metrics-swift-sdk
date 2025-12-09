@@ -430,6 +430,57 @@ final class MostlyGoodMetricsTests: XCTestCase {
         waitForExpectations(timeout: 1)
     }
 
+    func testClientTrackIncludesSDKPropertyDefaultingToSwift() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "SDK property")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            let sdkProperty = events.first?.properties?["$sdk"]?.value as? String
+            XCTAssertEqual(sdkProperty, "swift")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testClientTrackUsesWrapperNameForSDKProperty() {
+        let config = MGMConfiguration(apiKey: "test_key", wrapperName: "flutter")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "SDK property with wrapper")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            let sdkProperty = events.first?.properties?["$sdk"]?.value as? String
+            XCTAssertEqual(sdkProperty, "flutter")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testClientTrackIncludesDeviceTypeProperty() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "Device type property")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            let deviceType = events.first?.properties?["$device_type"]?.value as? String
+            XCTAssertNotNil(deviceType)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
     func testClientIdentify() {
         let config = MGMConfiguration(apiKey: "test_key")
         let storage = InMemoryEventStorage()
