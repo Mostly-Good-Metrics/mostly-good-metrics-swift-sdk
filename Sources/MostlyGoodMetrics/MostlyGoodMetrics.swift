@@ -20,6 +20,13 @@ public final class MostlyGoodMetrics {
     private var flushTimer: Timer?
     private let flushQueue = DispatchQueue(label: "com.mostlygoodmetrics.flush")
 
+    /// Tracks when the app was last backgrounded (for debouncing on macOS)
+    private var lastBackgroundedTime: Date?
+
+    /// Minimum seconds app must be backgrounded before tracking $app_opened on macOS.
+    /// This prevents excessive events from quick window/app switches.
+    private let macOSBackgroundThreshold: TimeInterval = 5.0
+
     // Keys for tracking install/update state
     private static let installedVersionKey = "MGM_installedVersion"
     private static let lastOpenedVersionKey = "MGM_lastOpenedVersion"
@@ -306,17 +313,39 @@ public final class MostlyGoodMetrics {
 
     @objc private func appWillResignActive() {
         debugLog("App will resign active - flushing events")
+        lastBackgroundedTime = Date()
+
+        #if os(macOS)
+        // On macOS, we don't track $app_backgrounded because window focus changes
+        // happen frequently (Cmd-Tab, clicking other windows). We still flush events.
+        #else
         if configuration.trackAppLifecycleEvents {
             track("$app_backgrounded")
         }
+        #endif
+
         flush()
     }
 
     @objc private func appDidBecomeActive() {
         debugLog("App did become active")
+
+        #if os(macOS)
+        // On macOS, only track $app_opened if the app was backgrounded for at least
+        // macOSBackgroundThreshold seconds. This prevents excessive events from quick
+        // window/app switches that are common on desktop.
+        if let lastBg = lastBackgroundedTime,
+           Date().timeIntervalSince(lastBg) >= macOSBackgroundThreshold,
+           configuration.trackAppLifecycleEvents {
+            track("$app_opened")
+        }
+        #else
         if configuration.trackAppLifecycleEvents {
             track("$app_opened")
         }
+        #endif
+
+        lastBackgroundedTime = nil
         flush()
     }
 

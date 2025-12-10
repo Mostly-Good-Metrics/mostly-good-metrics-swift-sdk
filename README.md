@@ -101,6 +101,17 @@ When `trackAppLifecycleEvents` is enabled (default), the SDK automatically track
 | `$app_opened` | App became active (foreground) | - |
 | `$app_backgrounded` | App resigned active (background) | - |
 
+### macOS Lifecycle Event Behavior
+
+On macOS, window focus changes happen frequently (Cmd-Tab, clicking other windows, etc.), which would generate excessive lifecycle events. To address this, the SDK applies debouncing on macOS:
+
+- **`$app_backgrounded`**: Not tracked on macOS (focus changes are too frequent)
+- **`$app_opened`**: Only tracked if the app was inactive for **at least 5 seconds**
+
+This ensures you get meaningful "app opened" events when users return to your app after a meaningful absence, without noise from quick window switches.
+
+> **Note:** Events are still flushed on every focus change regardless of debouncing, ensuring data is reliably sent to the server.
+
 ## Automatic Context
 
 Every event automatically includes:
