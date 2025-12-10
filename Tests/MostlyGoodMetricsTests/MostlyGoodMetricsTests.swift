@@ -138,6 +138,26 @@ final class MostlyGoodMetricsTests: XCTestCase {
         XCTAssertNotNil(json?["timestamp"])
     }
 
+    func testEventEncodingWithNewDeviceProperties() throws {
+        var event = MGMEvent(name: "test_event")
+        event.appVersion = "1.2.3"
+        event.appBuildNumber = "42"
+        event.deviceManufacturer = "Apple"
+        event.locale = "en_US"
+        event.timezone = "America/New_York"
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(event)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        XCTAssertNotNil(json)
+        XCTAssertEqual(json?["app_version"] as? String, "1.2.3")
+        XCTAssertEqual(json?["app_build_number"] as? String, "42")
+        XCTAssertEqual(json?["device_manufacturer"] as? String, "Apple")
+        XCTAssertEqual(json?["locale"] as? String, "en_US")
+        XCTAssertEqual(json?["timezone"] as? String, "America/New_York")
+    }
+
     func testEventTimestampFormat() throws {
         let event = MGMEvent(name: "test")
 
@@ -622,6 +642,56 @@ final class MostlyGoodMetricsTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             let events = storage.fetchEvents(limit: 1)
             XCTAssertEqual(events.first?.environment, "staging")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testClientEventsIncludeLocale() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "Locale")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            XCTAssertNotNil(events.first?.locale, "Events should include locale")
+            XCTAssertFalse(events.first?.locale?.isEmpty ?? true, "Locale should not be empty")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testClientEventsIncludeTimezone() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "Timezone")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            XCTAssertNotNil(events.first?.timezone, "Events should include timezone")
+            XCTAssertFalse(events.first?.timezone?.isEmpty ?? true, "Timezone should not be empty")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testClientEventsIncludeDeviceManufacturer() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "Device Manufacturer")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            XCTAssertEqual(events.first?.deviceManufacturer, "Apple", "Device manufacturer should be Apple")
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1)

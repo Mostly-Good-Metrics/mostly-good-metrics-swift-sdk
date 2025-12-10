@@ -17,14 +17,26 @@ public struct MGMEvent: Codable, Equatable {
     /// Platform identifier (e.g., "ios", "macos", "tvos", "watchos")
     public var platform: String?
 
-    /// App version string
+    /// App version string (e.g., "1.2.3")
     public var appVersion: String?
+
+    /// App build number (e.g., "42")
+    public var appBuildNumber: String?
 
     /// OS version string
     public var osVersion: String?
 
     /// Environment (e.g., "production", "staging")
     public var environment: String?
+
+    /// Device manufacturer (e.g., "Apple")
+    public var deviceManufacturer: String?
+
+    /// User's locale (e.g., "en_US")
+    public var locale: String?
+
+    /// User's timezone (e.g., "America/New_York")
+    public var timezone: String?
 
     /// Custom properties for the event (max 10KB, 3 levels deep)
     public var properties: [String: AnyCodable]?
@@ -36,8 +48,12 @@ public struct MGMEvent: Codable, Equatable {
         case sessionId = "session_id"
         case platform
         case appVersion = "app_version"
+        case appBuildNumber = "app_build_number"
         case osVersion = "os_version"
         case environment
+        case deviceManufacturer = "device_manufacturer"
+        case locale
+        case timezone
         case properties
     }
 
@@ -68,8 +84,12 @@ public struct MGMEvent: Codable, Equatable {
         try container.encodeIfPresent(sessionId, forKey: .sessionId)
         try container.encodeIfPresent(platform, forKey: .platform)
         try container.encodeIfPresent(appVersion, forKey: .appVersion)
+        try container.encodeIfPresent(appBuildNumber, forKey: .appBuildNumber)
         try container.encodeIfPresent(osVersion, forKey: .osVersion)
         try container.encodeIfPresent(environment, forKey: .environment)
+        try container.encodeIfPresent(deviceManufacturer, forKey: .deviceManufacturer)
+        try container.encodeIfPresent(locale, forKey: .locale)
+        try container.encodeIfPresent(timezone, forKey: .timezone)
         try container.encodeIfPresent(properties, forKey: .properties)
     }
 
@@ -91,8 +111,12 @@ public struct MGMEvent: Codable, Equatable {
         sessionId = try container.decodeIfPresent(String.self, forKey: .sessionId)
         platform = try container.decodeIfPresent(String.self, forKey: .platform)
         appVersion = try container.decodeIfPresent(String.self, forKey: .appVersion)
+        appBuildNumber = try container.decodeIfPresent(String.self, forKey: .appBuildNumber)
         osVersion = try container.decodeIfPresent(String.self, forKey: .osVersion)
         environment = try container.decodeIfPresent(String.self, forKey: .environment)
+        deviceManufacturer = try container.decodeIfPresent(String.self, forKey: .deviceManufacturer)
+        locale = try container.decodeIfPresent(String.self, forKey: .locale)
+        timezone = try container.decodeIfPresent(String.self, forKey: .timezone)
         properties = try container.decodeIfPresent([String: AnyCodable].self, forKey: .properties)
     }
 }
@@ -181,17 +205,25 @@ struct MGMEventsPayload: Encodable {
 struct MGMEventContext: Encodable {
     var platform: String?
     var appVersion: String?
+    var appBuildNumber: String?
     var osVersion: String?
     var userId: String?
     var sessionId: String?
     var environment: String?
+    var deviceManufacturer: String?
+    var locale: String?
+    var timezone: String?
 
     enum CodingKeys: String, CodingKey {
         case platform
         case appVersion = "app_version"
+        case appBuildNumber = "app_build_number"
         case osVersion = "os_version"
         case userId = "user_id"
         case sessionId = "session_id"
         case environment
+        case deviceManufacturer = "device_manufacturer"
+        case locale
+        case timezone
     }
 }
