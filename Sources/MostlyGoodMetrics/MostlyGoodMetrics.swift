@@ -144,8 +144,12 @@ public final class MostlyGoodMetrics {
         event.sessionId = sessionId
         event.platform = currentPlatform
         event.appVersion = appVersion
+        event.appBuildNumber = appBuildNumber
         event.osVersion = osVersion
         event.environment = configuration.environment
+        event.deviceManufacturer = deviceManufacturer
+        event.locale = currentLocale
+        event.timezone = currentTimezone
 
         storage.store(event: event)
         debugLog("Tracked event: \(name)")
@@ -213,10 +217,14 @@ public final class MostlyGoodMetrics {
         let context = MGMEventContext(
             platform: currentPlatform,
             appVersion: appVersion,
+            appBuildNumber: appBuildNumber,
             osVersion: osVersion,
             userId: userId,
             sessionId: sessionId,
-            environment: configuration.environment
+            environment: configuration.environment,
+            deviceManufacturer: deviceManufacturer,
+            locale: currentLocale,
+            timezone: currentTimezone
         )
 
         networkClient.sendEvents(events, context: context) { [weak self] result in
@@ -399,19 +407,23 @@ public final class MostlyGoodMetrics {
     }
 
     private var appVersion: String? {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+    }
 
-        switch (version, build) {
-        case let (v?, b?) where v != b:
-            return "\(v) (\(b))"
-        case let (v?, _):
-            return v
-        case let (nil, b?):
-            return b
-        default:
-            return nil
-        }
+    private var appBuildNumber: String? {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+    }
+
+    private var currentLocale: String {
+        Locale.current.identifier
+    }
+
+    private var currentTimezone: String {
+        TimeZone.current.identifier
+    }
+
+    private var deviceManufacturer: String {
+        "Apple"
     }
 
     private var osVersion: String {
