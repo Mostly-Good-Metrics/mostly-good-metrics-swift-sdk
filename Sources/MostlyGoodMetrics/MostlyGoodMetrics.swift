@@ -30,6 +30,7 @@ public final class MostlyGoodMetrics {
     // Keys for tracking install/update state
     private static let installedVersionKey = "MGM_installedVersion"
     private static let lastOpenedVersionKey = "MGM_lastOpenedVersion"
+    private static let superPropertiesKey = "MGM_superProperties"
 
     /// Current user ID (persisted across sessions)
     public var userId: String? {
@@ -131,12 +132,17 @@ public final class MostlyGoodMetrics {
             return
         }
 
-        // Merge user properties with system properties (user properties take precedence)
-        var mergedProperties = systemProperties
+        // Merge properties: super properties < user properties < system properties
+        // User properties override super properties, system properties are always added
+        var mergedProperties = getSuperProperties()
         if let userProps = properties {
             for (key, value) in userProps {
                 mergedProperties[key] = value
             }
+        }
+        // Add system properties (these always get added)
+        for (key, value) in systemProperties {
+            mergedProperties[key] = value
         }
 
         var event = MGMEvent(name: name, properties: mergedProperties.isEmpty ? nil : mergedProperties)
@@ -185,6 +191,61 @@ public final class MostlyGoodMetrics {
     public func startNewSession() {
         self.sessionId = UUID().uuidString
         debugLog("Started new session: \(sessionId)")
+    }
+
+    // MARK: - Super Properties
+
+    /// Sets a single super property that will be included with every event
+    /// - Parameters:
+    ///   - key: The property key
+    ///   - value: The property value
+    public func setSuperProperty(_ key: String, value: Any) {
+        var properties = getSuperProperties()
+        properties[key] = value
+        saveSuperProperties(properties)
+        debugLog("Set super property: \(key)")
+    }
+
+    /// Sets multiple super properties at once
+    /// - Parameter properties: Dictionary of properties to set
+    public func setSuperProperties(_ properties: [String: Any]) {
+        var current = getSuperProperties()
+        for (key, value) in properties {
+            current[key] = value
+        }
+        saveSuperProperties(current)
+        debugLog("Set super properties: \(properties.keys.joined(separator: ", "))")
+    }
+
+    /// Removes a single super property
+    /// - Parameter key: The property key to remove
+    public func removeSuperProperty(_ key: String) {
+        var properties = getSuperProperties()
+        properties.removeValue(forKey: key)
+        saveSuperProperties(properties)
+        debugLog("Removed super property: \(key)")
+    }
+
+    /// Clears all super properties
+    public func clearSuperProperties() {
+        UserDefaults.standard.removeObject(forKey: Self.superPropertiesKey)
+        debugLog("Cleared all super properties")
+    }
+
+    /// Gets all current super properties
+    /// - Returns: Dictionary of super properties
+    public func getSuperProperties() -> [String: Any] {
+        guard let data = UserDefaults.standard.data(forKey: Self.superPropertiesKey),
+              let properties = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return properties
+    }
+
+    private func saveSuperProperties(_ properties: [String: Any]) {
+        if let data = try? JSONSerialization.data(withJSONObject: properties) {
+            UserDefaults.standard.set(data, forKey: Self.superPropertiesKey)
+        }
     }
 
     // MARK: - Flushing
@@ -540,5 +601,36 @@ public extension MostlyGoodMetrics {
     /// Flushes events using the shared instance
     static func flush() {
         shared?.flush()
+    }
+
+    /// Sets a single super property using the shared instance
+    /// - Parameters:
+    ///   - key: The property key
+    ///   - value: The property value
+    static func setSuperProperty(_ key: String, value: Any) {
+        shared?.setSuperProperty(key, value: value)
+    }
+
+    /// Sets multiple super properties using the shared instance
+    /// - Parameter properties: Dictionary of properties to set
+    static func setSuperProperties(_ properties: [String: Any]) {
+        shared?.setSuperProperties(properties)
+    }
+
+    /// Removes a single super property using the shared instance
+    /// - Parameter key: The property key to remove
+    static func removeSuperProperty(_ key: String) {
+        shared?.removeSuperProperty(key)
+    }
+
+    /// Clears all super properties using the shared instance
+    static func clearSuperProperties() {
+        shared?.clearSuperProperties()
+    }
+
+    /// Gets all current super properties using the shared instance
+    /// - Returns: Dictionary of super properties
+    static func getSuperProperties() -> [String: Any] {
+        shared?.getSuperProperties() ?? [:]
     }
 }
