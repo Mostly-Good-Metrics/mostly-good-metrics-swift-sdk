@@ -34,7 +34,7 @@ jobs:
           elif [ -f "package.json" ]; then
             FILE="package.json"
             CURRENT=$(node -p "require('./package.json').version")
-          elif [ -f "*.podspec" ]; then
+          elif ls *.podspec 1> /dev/null 2>&1; then
             FILE=$(ls *.podspec | head -1)
             CURRENT=$(grep "s.version" "$FILE" | sed "s/.*['\"]\(.*\)['\"].*/\1/")
           elif [ -f "mostlygoodmetrics/build.gradle.kts" ]; then
