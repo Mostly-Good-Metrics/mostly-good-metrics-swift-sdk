@@ -5,6 +5,9 @@ public struct MGMEvent: Codable, Equatable {
     /// The event name (alphanumeric + underscore, must start with letter, max 255 chars)
     public let name: String
 
+    /// Unique client-generated ID for deduplication
+    public let clientEventId: String
+
     /// The timestamp when the event occurred
     public let timestamp: Date
 
@@ -43,6 +46,7 @@ public struct MGMEvent: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case name
+        case clientEventId = "client_event_id"
         case timestamp
         case userId = "user_id"
         case sessionId = "session_id"
@@ -68,6 +72,7 @@ public struct MGMEvent: Codable, Equatable {
         timestamp: Date = Date()
     ) {
         self.name = name
+        self.clientEventId = UUID().uuidString
         self.timestamp = timestamp
         self.properties = properties?.mapValues { AnyCodable($0) }
     }
@@ -75,6 +80,7 @@ public struct MGMEvent: Codable, Equatable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(name, forKey: .name)
+        try container.encode(clientEventId, forKey: .clientEventId)
 
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -96,6 +102,7 @@ public struct MGMEvent: Codable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         name = try container.decode(String.self, forKey: .name)
+        clientEventId = try container.decodeIfPresent(String.self, forKey: .clientEventId) ?? UUID().uuidString
 
         let timestampString = try container.decode(String.self, forKey: .timestamp)
         let formatter = ISO8601DateFormatter()
