@@ -5,15 +5,18 @@ final class MostlyGoodMetricsTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        // Clear persisted user ID before each test
+        // Clear persisted user ID and super properties before each test
         UserDefaults.standard.removeObject(forKey: "MGM_userId")
+        UserDefaults.standard.removeObject(forKey: "MGM_superProperties")
     }
 
     override func tearDown() {
         super.tearDown()
         // Clean up shared instance
         MostlyGoodMetrics.shared?.clearPendingEvents()
+        MostlyGoodMetrics.shared?.clearSuperProperties()
         UserDefaults.standard.removeObject(forKey: "MGM_userId")
+        UserDefaults.standard.removeObject(forKey: "MGM_superProperties")
     }
 
     // MARK: - Configuration Tests
@@ -752,6 +755,240 @@ final class MostlyGoodMetricsTests: XCTestCase {
 
         // Should not throw
         MostlyGoodMetrics.flush()
+    }
+
+    // MARK: - Super Properties Tests
+
+    func testSetSuperProperty() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        client.setSuperProperty("plan", value: "premium")
+
+        let properties = client.getSuperProperties()
+        XCTAssertEqual(properties["plan"] as? String, "premium")
+    }
+
+    func testSetMultipleSuperProperties() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        client.setSuperProperties([
+            "plan": "premium",
+            "version": "2.0",
+            "count": 42
+        ])
+
+        let properties = client.getSuperProperties()
+        XCTAssertEqual(properties["plan"] as? String, "premium")
+        XCTAssertEqual(properties["version"] as? String, "2.0")
+        XCTAssertEqual(properties["count"] as? Int, 42)
+    }
+
+    func testSetSuperPropertyOverwritesExisting() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        client.setSuperProperty("plan", value: "free")
+        client.setSuperProperty("plan", value: "premium")
+
+        let properties = client.getSuperProperties()
+        XCTAssertEqual(properties["plan"] as? String, "premium")
+    }
+
+    func testSetSuperPropertiesMergesWithExisting() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        client.setSuperProperty("existing", value: "value1")
+        client.setSuperProperties(["new": "value2"])
+
+        let properties = client.getSuperProperties()
+        XCTAssertEqual(properties["existing"] as? String, "value1")
+        XCTAssertEqual(properties["new"] as? String, "value2")
+    }
+
+    func testRemoveSuperProperty() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        client.setSuperProperties(["key1": "value1", "key2": "value2"])
+        client.removeSuperProperty("key1")
+
+        let properties = client.getSuperProperties()
+        XCTAssertNil(properties["key1"])
+        XCTAssertEqual(properties["key2"] as? String, "value2")
+    }
+
+    func testClearSuperProperties() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        client.setSuperProperties(["key1": "value1", "key2": "value2"])
+        client.clearSuperProperties()
+
+        let properties = client.getSuperProperties()
+        XCTAssertTrue(properties.isEmpty)
+    }
+
+    func testGetSuperPropertiesReturnsEmptyWhenNoneSet() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        let properties = client.getSuperProperties()
+        XCTAssertTrue(properties.isEmpty)
+    }
+
+    func testSuperPropertiesIncludedInTrackedEvents() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.setSuperProperty("plan", value: "premium")
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "Super properties in event")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            let planProperty = events.first?.properties?["plan"]?.value as? String
+            XCTAssertEqual(planProperty, "premium")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testEventPropertiesOverrideSuperProperties() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.setSuperProperty("source", value: "super")
+        client.track("test_event", properties: ["source": "event"])
+
+        let expectation = self.expectation(description: "Event overrides super")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            let sourceProperty = events.first?.properties?["source"]?.value as? String
+            XCTAssertEqual(sourceProperty, "event", "Event properties should override super properties")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testSuperPropertiesPersistAcrossInstances() {
+        // First instance sets super properties
+        let config1 = MGMConfiguration(apiKey: "test_key")
+        let client1 = MostlyGoodMetrics(configuration: config1, storage: InMemoryEventStorage())
+        client1.setSuperProperty("persistent", value: "value")
+
+        // Second instance should read persisted properties
+        let config2 = MGMConfiguration(apiKey: "test_key")
+        let client2 = MostlyGoodMetrics(configuration: config2, storage: InMemoryEventStorage())
+
+        let properties = client2.getSuperProperties()
+        XCTAssertEqual(properties["persistent"] as? String, "value")
+    }
+
+    func testSuperPropertiesWithDifferentValueTypes() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        client.setSuperProperties([
+            "string": "hello",
+            "integer": 42,
+            "double": 3.14,
+            "boolean": true
+        ])
+
+        let properties = client.getSuperProperties()
+        XCTAssertEqual(properties["string"] as? String, "hello")
+        XCTAssertEqual(properties["integer"] as? Int, 42)
+        XCTAssertEqual(properties["double"] as? Double, 3.14)
+        XCTAssertEqual(properties["boolean"] as? Bool, true)
+    }
+
+    func testStaticSetSuperProperty() {
+        MostlyGoodMetrics.configure(apiKey: "test_key")
+
+        MostlyGoodMetrics.setSuperProperty("static_key", value: "static_value")
+
+        let properties = MostlyGoodMetrics.getSuperProperties()
+        XCTAssertEqual(properties["static_key"] as? String, "static_value")
+    }
+
+    func testStaticSetSuperProperties() {
+        MostlyGoodMetrics.configure(apiKey: "test_key")
+
+        MostlyGoodMetrics.setSuperProperties(["key1": "value1", "key2": "value2"])
+
+        let properties = MostlyGoodMetrics.getSuperProperties()
+        XCTAssertEqual(properties["key1"] as? String, "value1")
+        XCTAssertEqual(properties["key2"] as? String, "value2")
+    }
+
+    func testStaticRemoveSuperProperty() {
+        MostlyGoodMetrics.configure(apiKey: "test_key")
+
+        MostlyGoodMetrics.setSuperProperties(["key1": "value1", "key2": "value2"])
+        MostlyGoodMetrics.removeSuperProperty("key1")
+
+        let properties = MostlyGoodMetrics.getSuperProperties()
+        XCTAssertNil(properties["key1"])
+        XCTAssertEqual(properties["key2"] as? String, "value2")
+    }
+
+    func testStaticClearSuperProperties() {
+        MostlyGoodMetrics.configure(apiKey: "test_key")
+
+        MostlyGoodMetrics.setSuperProperties(["key1": "value1"])
+        MostlyGoodMetrics.clearSuperProperties()
+
+        let properties = MostlyGoodMetrics.getSuperProperties()
+        XCTAssertTrue(properties.isEmpty)
+    }
+
+    func testSuperPropertiesNotOverrideSystemProperties() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        // Try to set a system property via super properties
+        client.setSuperProperty("$sdk", value: "custom_sdk")
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "System properties preserved")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            let sdkProperty = events.first?.properties?["$sdk"]?.value as? String
+            // System property should be preserved (not overwritten by super property)
+            XCTAssertEqual(sdkProperty, "swift")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testMultipleSuperPropertiesIncludedInEvent() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.setSuperProperties([
+            "app_version": "1.0.0",
+            "user_type": "premium",
+            "feature_flag": true
+        ])
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "Multiple super properties")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            let props = events.first?.properties
+            XCTAssertEqual(props?["app_version"]?.value as? String, "1.0.0")
+            XCTAssertEqual(props?["user_type"]?.value as? String, "premium")
+            XCTAssertEqual(props?["feature_flag"]?.value as? Bool, true)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
     }
 
     // MARK: - Flush Tests
