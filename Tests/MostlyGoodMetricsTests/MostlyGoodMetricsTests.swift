@@ -99,6 +99,8 @@ final class MostlyGoodMetricsTests: XCTestCase {
         let event = MGMEvent(name: "test_event")
 
         XCTAssertEqual(event.name, "test_event")
+        XCTAssertNotNil(event.clientEventId)
+        XCTAssertFalse(event.clientEventId.isEmpty)
         XCTAssertNotNil(event.timestamp)
         XCTAssertNil(event.userId)
         XCTAssertNil(event.properties)
@@ -117,6 +119,79 @@ final class MostlyGoodMetricsTests: XCTestCase {
         XCTAssertEqual(event.properties?.count, 3)
     }
 
+    // MARK: - Client Event ID Tests
+
+    func testClientEventIdIsUUID() {
+        let event = MGMEvent(name: "test_event")
+
+        // Verify it's a valid UUID format
+        XCTAssertNotNil(UUID(uuidString: event.clientEventId), "clientEventId should be a valid UUID")
+    }
+
+    func testClientEventIdIsUniquePerEvent() {
+        let event1 = MGMEvent(name: "test_event")
+        let event2 = MGMEvent(name: "test_event")
+
+        XCTAssertNotEqual(event1.clientEventId, event2.clientEventId, "Each event should have a unique clientEventId")
+    }
+
+    func testClientEventIdEncodedInJson() throws {
+        let event = MGMEvent(name: "test_event")
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(event)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        XCTAssertNotNil(json?["client_event_id"] as? String)
+        XCTAssertEqual(json?["client_event_id"] as? String, event.clientEventId)
+    }
+
+    func testClientEventIdDecodedFromJson() throws {
+        let testUUID = UUID().uuidString
+        let jsonString = """
+        {
+            "name": "test_event",
+            "client_event_id": "\(testUUID)",
+            "timestamp": "2024-01-01T00:00:00.000Z"
+        }
+        """
+        let data = jsonString.data(using: .utf8)!
+
+        let decoder = JSONDecoder()
+        let event = try decoder.decode(MGMEvent.self, from: data)
+
+        XCTAssertEqual(event.clientEventId, testUUID)
+    }
+
+    func testClientEventIdGeneratedWhenMissingInJson() throws {
+        let jsonString = """
+        {
+            "name": "test_event",
+            "timestamp": "2024-01-01T00:00:00.000Z"
+        }
+        """
+        let data = jsonString.data(using: .utf8)!
+
+        let decoder = JSONDecoder()
+        let event = try decoder.decode(MGMEvent.self, from: data)
+
+        // Should generate a new UUID when missing
+        XCTAssertNotNil(UUID(uuidString: event.clientEventId), "Should generate valid UUID when missing from JSON")
+    }
+
+    func testClientEventIdPreservedThroughEncodeDecode() throws {
+        let originalEvent = MGMEvent(name: "test_event", properties: ["key": "value"])
+        let originalId = originalEvent.clientEventId
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(originalEvent)
+
+        let decoder = JSONDecoder()
+        let decodedEvent = try decoder.decode(MGMEvent.self, from: data)
+
+        XCTAssertEqual(decodedEvent.clientEventId, originalId, "clientEventId should be preserved through encode/decode")
+    }
+
     func testEventEncoding() throws {
         var event = MGMEvent(name: "app_opened", properties: ["screen": "home"])
         event.userId = "user123"
@@ -132,6 +207,7 @@ final class MostlyGoodMetricsTests: XCTestCase {
 
         XCTAssertNotNil(json)
         XCTAssertEqual(json?["name"] as? String, "app_opened")
+        XCTAssertNotNil(json?["client_event_id"] as? String)
         XCTAssertEqual(json?["user_id"] as? String, "user123")
         XCTAssertEqual(json?["session_id"] as? String, "session456")
         XCTAssertEqual(json?["platform"] as? String, "ios")
