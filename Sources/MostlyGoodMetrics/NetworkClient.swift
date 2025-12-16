@@ -64,6 +64,12 @@ final class NetworkClient: NetworkClientProtocol {
         request.setValue(configuration.apiKey, forHTTPHeaderField: "X-MGM-Key")
         request.setValue(buildUserAgent(), forHTTPHeaderField: "User-Agent")
 
+        // SDK identification headers for metrics
+        request.setValue("swift", forHTTPHeaderField: "X-MGM-SDK")
+        request.setValue(sdkVersion, forHTTPHeaderField: "X-MGM-SDK-Version")
+        request.setValue(currentPlatform.lowercased(), forHTTPHeaderField: "X-MGM-Platform")
+        request.setValue(currentOSVersion, forHTTPHeaderField: "X-MGM-Platform-Version")
+
         // Set bundle ID if available
         let bundleId = configuration.bundleId ?? Bundle.main.bundleIdentifier
         if let bundleId = bundleId {
