@@ -93,6 +93,14 @@ jobs:
             sed -i "s/version = \".*\"/version = \"$NEW\"/" "$FILE"
           fi
 
+      - name: Update SDK version constant in code
+        run: |
+          NEW="${{ steps.version.outputs.new }}"
+          # Swift SDK - update sdkVersion in NetworkClient.swift
+          if [ -f "Sources/MostlyGoodMetrics/NetworkClient.swift" ]; then
+            sed -i 's/internal let sdkVersion = ".*"/internal let sdkVersion = "'"$NEW"'"/' Sources/MostlyGoodMetrics/NetworkClient.swift
+          fi
+
       - name: Create Pull Request
         id: create-pr
         uses: peter-evans/create-pull-request@v6
