@@ -11,6 +11,10 @@ on:
           - patch
           - minor
           - major
+      release_notes:
+        description: 'Release notes (markdown)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -99,8 +103,5 @@ jobs:
           delete-branch: true
           title: "Bump version to ${{ steps.version.outputs.new }}"
           body: |
-            Automated version bump PR.
-
-            **Version:** ${{ steps.version.outputs.current }} → ${{ steps.version.outputs.new }}
-            **Bump type:** ${{ inputs.bump_type }}
+            ${{ inputs.release_notes || 'Bug fixes and improvements' }}
 
