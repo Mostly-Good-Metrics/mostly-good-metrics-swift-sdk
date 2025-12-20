@@ -39,7 +39,7 @@ public struct MGMConfiguration {
     public var wrapperVersion: String?
 
     /// Default API base URL
-    public static let defaultBaseURL = URL(string: "https://mostlygoodmetrics.com")!
+    public static let defaultBaseURL = URL(string: "https://ingest.mostlygoodmetrics.com")!
 
     /// Creates a new configuration with the specified API key
     /// - Parameters:
