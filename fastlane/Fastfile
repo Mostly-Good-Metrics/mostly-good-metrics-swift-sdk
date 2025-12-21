@@ -1,0 +1,9 @@
+import_from_git(
+  url: "https://github.com/Mostly-Good-Metrics/tools.git",
+  path: "fastlane/Fastfile"
+)
+
+desc "Release Swift SDK"
+lane :release do |options|
+  release_swift(options)
+end
