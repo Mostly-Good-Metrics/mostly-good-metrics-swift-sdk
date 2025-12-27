@@ -31,6 +31,7 @@ public final class MostlyGoodMetrics {
     private static let installedVersionKey = "MGM_installedVersion"
     private static let lastOpenedVersionKey = "MGM_lastOpenedVersion"
     private static let superPropertiesKey = "MGM_superProperties"
+    private static let anonymousIdKey = "MGM_anonymousId"
 
     /// Current user ID (persisted across sessions)
     public var userId: String? {
@@ -43,8 +44,17 @@ public final class MostlyGoodMetrics {
         }
     }
 
+    /// Anonymous ID (auto-generated, persisted across sessions)
+    /// Format: $anon_xxxxxxxxxxxx (12 random alphanumeric chars)
+    public private(set) var anonymousId: String
+
     /// Current session ID (generated per app launch)
     public private(set) var sessionId: String
+
+    /// The effective user ID to use in events (identified user or anonymous)
+    private var effectiveUserId: String {
+        userId ?? anonymousId
+    }
 
     /// Whether the SDK is currently sending events
     public private(set) var isFlushing: Bool = false
@@ -79,6 +89,9 @@ public final class MostlyGoodMetrics {
         // Restore or generate user ID
         self.userId = UserDefaults.standard.string(forKey: "MGM_userId")
 
+        // Initialize or restore anonymous ID
+        self.anonymousId = Self.initializeAnonymousId()
+
         // Generate new session ID
         self.sessionId = UUID().uuidString
 
@@ -96,6 +109,7 @@ public final class MostlyGoodMetrics {
         self.networkClient = NetworkClient(configuration: configuration)
 
         self.userId = UserDefaults.standard.string(forKey: "MGM_userId")
+        self.anonymousId = Self.initializeAnonymousId()
         self.sessionId = UUID().uuidString
 
         startFlushTimer()
@@ -110,6 +124,7 @@ public final class MostlyGoodMetrics {
         self.networkClient = networkClient
 
         self.userId = nil
+        self.anonymousId = Self.initializeAnonymousId()
         self.sessionId = UUID().uuidString
 
         // Skip timers and lifecycle observers for test instances
@@ -146,7 +161,7 @@ public final class MostlyGoodMetrics {
         }
 
         var event = MGMEvent(name: name, properties: mergedProperties.isEmpty ? nil : mergedProperties)
-        event.userId = userId
+        event.userId = effectiveUserId
         event.sessionId = sessionId
         event.platform = currentPlatform
         event.appVersion = appVersion
@@ -280,7 +295,7 @@ public final class MostlyGoodMetrics {
             appVersion: appVersion,
             appBuildNumber: appBuildNumber,
             osVersion: osVersion,
-            userId: userId,
+            userId: effectiveUserId,
             sessionId: sessionId,
             environment: configuration.environment,
             deviceManufacturer: deviceManufacturer,
@@ -578,6 +593,30 @@ public final class MostlyGoodMetrics {
         if configuration.enableDebugLogging {
             print("[MostlyGoodMetrics] \(message)")
         }
+    }
+
+    // MARK: - Anonymous ID
+
+    /// Generates a random alphanumeric string of the given length
+    private static func generateRandomString(length: Int) -> String {
+        let chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+        return String((0..<length).map { _ in chars.randomElement()! })
+    }
+
+    /// Generates an anonymous user ID with $anon_ prefix
+    /// Format: $anon_xxxxxxxxxxxx (12 random alphanumeric chars)
+    private static func generateAnonymousId() -> String {
+        "$anon_\(generateRandomString(length: 12))"
+    }
+
+    /// Initializes or restores the anonymous ID from UserDefaults
+    private static func initializeAnonymousId() -> String {
+        if let stored = UserDefaults.standard.string(forKey: anonymousIdKey) {
+            return stored
+        }
+        let newId = generateAnonymousId()
+        UserDefaults.standard.set(newId, forKey: anonymousIdKey)
+        return newId
     }
 }
 
