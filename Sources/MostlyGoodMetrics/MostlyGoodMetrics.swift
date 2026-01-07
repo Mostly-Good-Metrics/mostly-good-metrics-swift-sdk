@@ -32,6 +32,8 @@ public final class MostlyGoodMetrics {
     private static let lastOpenedVersionKey = "MGM_lastOpenedVersion"
     private static let superPropertiesKey = "MGM_superProperties"
     private static let anonymousIdKey = "MGM_anonymousId"
+    private static let identifyHashKey = "MGM_identifyHash"
+    private static let identifyTimestampKey = "MGM_identifyTimestamp"
 
     /// Current user ID (persisted across sessions)
     public var userId: String? {
@@ -189,17 +191,78 @@ public final class MostlyGoodMetrics {
 
     // MARK: - User Identity
 
-    /// Sets the user ID for all subsequent events
-    /// - Parameter userId: The user identifier
-    public func identify(userId: String) {
+    /// Sets the user ID for all subsequent events with optional profile data.
+    /// Profile data (email, name) is sent to the backend via the $identify event.
+    /// Debouncing: only sends $identify if payload changed or >24h since last send.
+    ///
+    /// - Parameters:
+    ///   - userId: The user identifier
+    ///   - profile: Optional profile data (email, name)
+    public func identify(userId: String, profile: UserProfile? = nil) {
         self.userId = userId
         debugLog("Identified user: \(userId)")
+
+        // If profile data is provided, check if we should send $identify event
+        if let profile = profile, profile.email != nil || profile.name != nil {
+            sendIdentifyEventIfNeeded(userId: userId, profile: profile)
+        }
     }
 
-    /// Clears the current user ID
+    /// Clears the current user ID and identify debounce state
     public func resetIdentity() {
         self.userId = nil
+        clearIdentifyState()
         debugLog("Reset user identity")
+    }
+
+    /// Send $identify event if debounce conditions are met.
+    /// Only sends if: hash changed OR more than 24 hours since last send.
+    private func sendIdentifyEventIfNeeded(userId: String, profile: UserProfile) {
+        let currentHash = computeIdentifyHash(userId: userId, profile: profile)
+        let storedHash = UserDefaults.standard.string(forKey: Self.identifyHashKey)
+        let lastSentAt = UserDefaults.standard.object(forKey: Self.identifyTimestampKey) as? Date
+        let twentyFourHours: TimeInterval = 24 * 60 * 60
+
+        let hashChanged = storedHash != currentHash
+        let expiredTime = lastSentAt == nil || Date().timeIntervalSince(lastSentAt!) > twentyFourHours
+
+        if hashChanged || expiredTime {
+            debugLog("Sending $identify event (hashChanged=\(hashChanged), expiredTime=\(expiredTime))")
+
+            // Build properties with only defined values
+            var properties: [String: Any] = [:]
+            if let email = profile.email {
+                properties["email"] = email
+            }
+            if let name = profile.name {
+                properties["name"] = name
+            }
+
+            // Track the $identify event
+            track("$identify", properties: properties)
+
+            // Update stored hash and timestamp
+            UserDefaults.standard.set(currentHash, forKey: Self.identifyHashKey)
+            UserDefaults.standard.set(Date(), forKey: Self.identifyTimestampKey)
+        } else {
+            debugLog("Skipping $identify event (debounced)")
+        }
+    }
+
+    /// Compute a simple hash for debouncing identify calls
+    private func computeIdentifyHash(userId: String, profile: UserProfile) -> String {
+        let payload = "\(userId)|\(profile.email ?? "")|\(profile.name ?? "")"
+        var hash: Int = 0
+        for char in payload.utf8 {
+            hash = ((hash << 5) &- hash) &+ Int(char)
+        }
+        return String(hash, radix: 16)
+    }
+
+    /// Clear identify debounce state
+    private func clearIdentifyState() {
+        UserDefaults.standard.removeObject(forKey: Self.identifyHashKey)
+        UserDefaults.standard.removeObject(forKey: Self.identifyTimestampKey)
     }
 
     /// Starts a new session with a fresh session ID
@@ -631,10 +694,15 @@ public extension MostlyGoodMetrics {
         shared?.track(name, properties: properties)
     }
 
-    /// Identifies a user using the shared instance
-    /// - Parameter userId: The user identifier
-    static func identify(userId: String) {
-        shared?.identify(userId: userId)
+    /// Identifies a user using the shared instance with optional profile data.
+    /// Profile data (email, name) is sent to the backend via the $identify event.
+    /// Debouncing: only sends $identify if payload changed or >24h since last send.
+    ///
+    /// - Parameters:
+    ///   - userId: The user identifier
+    ///   - profile: Optional profile data (email, name)
+    static func identify(userId: String, profile: UserProfile? = nil) {
+        shared?.identify(userId: userId, profile: profile)
     }
 
     /// Flushes events using the shared instance
@@ -671,5 +739,25 @@ public extension MostlyGoodMetrics {
     /// - Returns: Dictionary of super properties
     static func getSuperProperties() -> [String: Any] {
         shared?.getSuperProperties() ?? [:]
+    }
+}
+
+// MARK: - User Profile
+
+/// User profile data for the identify() call.
+public struct UserProfile {
+    /// The user's email address.
+    public let email: String?
+
+    /// The user's display name.
+    public let name: String?
+
+    /// Creates a new user profile.
+    /// - Parameters:
+    ///   - email: The user's email address
+    ///   - name: The user's display name
+    public init(email: String? = nil, name: String? = nil) {
+        self.email = email
+        self.name = name
     }
 }
