@@ -624,6 +624,220 @@ final class MostlyGoodMetricsTests: XCTestCase {
         XCTAssertNil(storedUserId)
     }
 
+    // MARK: - Identify with Profile Tests
+
+    func testIdentifyWithEmailSendsIdentifyEvent() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        // Clear any previous identify state
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyHash")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyTimestamp")
+
+        let profile = UserProfile(email: "test@example.com")
+        client.identify(userId: "user123", profile: profile)
+
+        let expectation = self.expectation(description: "Identify with email")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 10)
+            let identifyEvent = events.first { $0.name == "$identify" }
+            XCTAssertNotNil(identifyEvent, "Should send $identify event when profile has email")
+            XCTAssertEqual(identifyEvent?.properties?["email"]?.value as? String, "test@example.com")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testIdentifyWithNameSendsIdentifyEvent() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        // Clear any previous identify state
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyHash")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyTimestamp")
+
+        let profile = UserProfile(name: "John Doe")
+        client.identify(userId: "user456", profile: profile)
+
+        let expectation = self.expectation(description: "Identify with name")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 10)
+            let identifyEvent = events.first { $0.name == "$identify" }
+            XCTAssertNotNil(identifyEvent, "Should send $identify event when profile has name")
+            XCTAssertEqual(identifyEvent?.properties?["name"]?.value as? String, "John Doe")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testIdentifyWithEmailAndNameSendsIdentifyEvent() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        // Clear any previous identify state
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyHash")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyTimestamp")
+
+        let profile = UserProfile(email: "jane@example.com", name: "Jane Smith")
+        client.identify(userId: "user789", profile: profile)
+
+        let expectation = self.expectation(description: "Identify with email and name")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 10)
+            let identifyEvent = events.first { $0.name == "$identify" }
+            XCTAssertNotNil(identifyEvent, "Should send $identify event when profile has both email and name")
+            XCTAssertEqual(identifyEvent?.properties?["email"]?.value as? String, "jane@example.com")
+            XCTAssertEqual(identifyEvent?.properties?["name"]?.value as? String, "Jane Smith")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testIdentifyWithoutProfileDoesNotSendIdentifyEvent() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        // Clear any previous identify state
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyHash")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyTimestamp")
+
+        client.identify(userId: "user_only")
+
+        let expectation = self.expectation(description: "Identify without profile")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 10)
+            let identifyEvent = events.first { $0.name == "$identify" }
+            XCTAssertNil(identifyEvent, "Should NOT send $identify event when no profile provided")
+            XCTAssertEqual(client.userId, "user_only")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testIdentifyDebouncesWhenHashUnchanged() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        // Clear any previous identify state
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyHash")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyTimestamp")
+
+        let profile = UserProfile(email: "same@example.com", name: "Same User")
+
+        // First identify - should send event
+        client.identify(userId: "debounce_user", profile: profile)
+
+        let expectation = self.expectation(description: "Identify debounces")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let firstCount = storage.fetchEvents(limit: 100).filter { $0.name == "$identify" }.count
+            XCTAssertEqual(firstCount, 1, "First identify should send event")
+
+            // Second identify with same data - should NOT send event (debounced)
+            client.identify(userId: "debounce_user", profile: profile)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                let secondCount = storage.fetchEvents(limit: 100).filter { $0.name == "$identify" }.count
+                XCTAssertEqual(secondCount, 1, "Second identify with same data should be debounced")
+                expectation.fulfill()
+            }
+        }
+        waitForExpectations(timeout: 2)
+    }
+
+    func testIdentifyResendAfterHashChanged() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        // Clear any previous identify state
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyHash")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyTimestamp")
+
+        let profile1 = UserProfile(email: "first@example.com")
+        let profile2 = UserProfile(email: "second@example.com")
+
+        // First identify
+        client.identify(userId: "hash_user", profile: profile1)
+
+        let expectation = self.expectation(description: "Identify resends on hash change")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let firstCount = storage.fetchEvents(limit: 100).filter { $0.name == "$identify" }.count
+            XCTAssertEqual(firstCount, 1, "First identify should send event")
+
+            // Second identify with different data - should send new event
+            client.identify(userId: "hash_user", profile: profile2)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                let events = storage.fetchEvents(limit: 100).filter { $0.name == "$identify" }
+                XCTAssertEqual(events.count, 2, "Second identify with different data should send new event")
+
+                // Verify the second event has the new email
+                let latestIdentify = events.last
+                XCTAssertEqual(latestIdentify?.properties?["email"]?.value as? String, "second@example.com")
+                expectation.fulfill()
+            }
+        }
+        waitForExpectations(timeout: 2)
+    }
+
+    func testResetIdentityClearsDebounceState() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        // Clear any previous identify state
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyHash")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyTimestamp")
+
+        let profile = UserProfile(email: "reset@example.com")
+
+        // First identify
+        client.identify(userId: "reset_user", profile: profile)
+
+        let expectation = self.expectation(description: "Reset clears debounce state")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let firstCount = storage.fetchEvents(limit: 100).filter { $0.name == "$identify" }.count
+            XCTAssertEqual(firstCount, 1, "First identify should send event")
+
+            // Reset identity - should clear debounce state
+            client.resetIdentity()
+
+            // Verify hash and timestamp are cleared
+            let storedHash = UserDefaults.standard.string(forKey: "MGM_identifyHash")
+            let storedTimestamp = UserDefaults.standard.object(forKey: "MGM_identifyTimestamp")
+            XCTAssertNil(storedHash, "Hash should be cleared on reset")
+            XCTAssertNil(storedTimestamp, "Timestamp should be cleared on reset")
+
+            // Re-identify with same data - should send event since state was cleared
+            client.identify(userId: "reset_user", profile: profile)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                let secondCount = storage.fetchEvents(limit: 100).filter { $0.name == "$identify" }.count
+                XCTAssertEqual(secondCount, 2, "After reset, same profile should trigger new $identify event")
+                expectation.fulfill()
+            }
+        }
+        waitForExpectations(timeout: 2)
+    }
+
+    func testStaticIdentifyWithProfile() {
+        MostlyGoodMetrics.configure(apiKey: "test_key")
+
+        // Clear any previous identify state
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyHash")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyTimestamp")
+
+        let profile = UserProfile(email: "static@example.com", name: "Static User")
+        MostlyGoodMetrics.identify(userId: "static_user", profile: profile)
+
+        XCTAssertEqual(MostlyGoodMetrics.shared?.userId, "static_user")
+    }
+
     func testClientNewSession() {
         let config = MGMConfiguration(apiKey: "test_key")
         let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
