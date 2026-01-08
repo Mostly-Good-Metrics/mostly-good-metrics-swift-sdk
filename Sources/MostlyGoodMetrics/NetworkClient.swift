@@ -18,6 +18,10 @@ protocol NetworkClientProtocol {
         context: MGMEventContext?,
         completion: @escaping (Result<Void, MGMError>) -> Void
     )
+
+    func fetchExperiments(
+        completion: @escaping (Result<[MGMExperiment], MGMError>) -> Void
+    )
 }
 
 /// Handles network communication with the MostlyGoodMetrics API
@@ -159,6 +163,75 @@ final class NetworkClient: NetworkClientProtocol {
 
             default:
                 self.debugLog("Unexpected status code: \(httpResponse.statusCode)")
+                completion(.failure(.unexpectedStatusCode(httpResponse.statusCode)))
+            }
+        }
+
+        task.resume()
+    }
+
+    /// Fetches experiments from the API
+    /// - Parameter completion: Completion handler with result
+    func fetchExperiments(
+        completion: @escaping (Result<[MGMExperiment], MGMError>) -> Void
+    ) {
+        let url = configuration.baseURL.appendingPathComponent("v1/experiments")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(configuration.apiKey, forHTTPHeaderField: "X-MGM-Key")
+        request.setValue(buildUserAgent(), forHTTPHeaderField: "User-Agent")
+
+        debugLog("Fetching experiments from \(url)")
+
+        let task = session.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                self.debugLog("Network error fetching experiments: \(error.localizedDescription)")
+                completion(.failure(.networkError(error)))
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                completion(.failure(.invalidResponse))
+                return
+            }
+
+            switch httpResponse.statusCode {
+            case 200:
+                guard let data = data else {
+                    completion(.failure(.invalidResponse))
+                    return
+                }
+
+                do {
+                    let decoder = JSONDecoder()
+                    let response = try decoder.decode(ExperimentsResponse.self, from: data)
+                    self.debugLog("Fetched \(response.experiments.count) experiments")
+                    completion(.success(response.experiments))
+                } catch {
+                    self.debugLog("Failed to decode experiments: \(error.localizedDescription)")
+                    completion(.failure(.encodingError(error)))
+                }
+
+            case 401:
+                self.debugLog("Unauthorized fetching experiments - invalid API key")
+                completion(.failure(.unauthorized))
+
+            case 403:
+                let errorMessage = self.parseErrorMessage(from: data)
+                self.debugLog("Forbidden fetching experiments: \(errorMessage)")
+                completion(.failure(.forbidden(errorMessage)))
+
+            case 500...599:
+                let errorMessage = self.parseErrorMessage(from: data)
+                self.debugLog("Server error fetching experiments: \(errorMessage)")
+                completion(.failure(.serverError(httpResponse.statusCode, errorMessage)))
+
+            default:
+                self.debugLog("Unexpected status code fetching experiments: \(httpResponse.statusCode)")
                 completion(.failure(.unexpectedStatusCode(httpResponse.statusCode)))
             }
         }

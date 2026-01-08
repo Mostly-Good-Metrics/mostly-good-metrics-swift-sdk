@@ -23,6 +23,12 @@ public final class MostlyGoodMetrics {
     /// Tracks when the app was last backgrounded (for debouncing on macOS)
     private var lastBackgroundedTime: Date?
 
+    /// Cached experiments from the server
+    private var experiments: [MGMExperiment] = []
+
+    /// Whether experiments have been fetched
+    private var experimentsFetched: Bool = false
+
     /// Minimum seconds app must be backgrounded before tracking $app_opened on macOS.
     /// This prevents excessive events from quick window/app switches.
     private let macOSBackgroundThreshold: TimeInterval = 5.0
@@ -100,6 +106,7 @@ public final class MostlyGoodMetrics {
         startFlushTimer()
         setupAppLifecycleObservers()
         trackInstallOrUpdate()
+        fetchExperiments()
 
         debugLog("Initialized with \(self.storage.eventCount()) cached events")
     }
@@ -324,6 +331,96 @@ public final class MostlyGoodMetrics {
         if let data = try? JSONSerialization.data(withJSONObject: properties) {
             UserDefaults.standard.set(data, forKey: Self.superPropertiesKey)
         }
+    }
+
+    // MARK: - A/B Testing / Experiments
+
+    /// Gets the variant for an experiment.
+    /// Returns a deterministic variant based on the user ID + experiment name hash.
+    /// The variant is automatically stored as a super property.
+    ///
+    /// - Parameter experimentName: The name/id of the experiment
+    /// - Returns: The variant string ('a', 'b', etc) or nil if experiment not found
+    public func getVariant(experimentName: String) -> String? {
+        // Find the experiment in cache (or use fallback if not fetched)
+        let experiment = experiments.first { $0.id == experimentName }
+
+        // If experiment not found and experiments have been fetched, return nil
+        guard let variants = experiment?.variants, !variants.isEmpty else {
+            // If experiments haven't been fetched yet, we can still compute a hash-based fallback
+            // but we don't know the valid variants, so return nil
+            if experimentsFetched {
+                debugLog("Experiment '\(experimentName)' not found")
+            } else {
+                debugLog("Experiments not yet fetched, cannot determine variant for '\(experimentName)'")
+            }
+            return nil
+        }
+
+        // Compute deterministic variant based on userId + experimentName
+        let variant = computeVariant(experimentName: experimentName, variants: variants)
+
+        // Store as super property so it's attached to all events
+        let propertyName = "experiment_\(toSnakeCase(experimentName))"
+        setSuperProperty(propertyName, value: variant)
+
+        debugLog("Got variant '\(variant)' for experiment '\(experimentName)'")
+        return variant
+    }
+
+    /// Computes a deterministic variant for an experiment based on the user's ID.
+    /// Same user + same experiment always gets the same variant.
+    private func computeVariant(experimentName: String, variants: [String]) -> String {
+        let hashInput = "\(effectiveUserId)|\(experimentName)"
+        let hash = djb2Hash(hashInput)
+        let index = Int(hash % UInt32(variants.count))
+        return variants[index]
+    }
+
+    /// DJB2 hash function for deterministic variant assignment
+    private func djb2Hash(_ string: String) -> UInt32 {
+        var hash: UInt32 = 5381
+        for char in string.utf8 {
+            hash = ((hash << 5) &+ hash) &+ UInt32(char)
+        }
+        return hash
+    }
+
+    /// Converts a string to snake_case
+    private func toSnakeCase(_ string: String) -> String {
+        let result = string.unicodeScalars.reduce("") { result, scalar in
+            if CharacterSet.uppercaseLetters.contains(scalar) {
+                return result + (result.isEmpty ? "" : "_") + String(scalar).lowercased()
+            } else if scalar == "-" || scalar == " " {
+                return result + "_"
+            } else {
+                return result + String(scalar)
+            }
+        }
+        return result.lowercased()
+    }
+
+    /// Fetches experiments from the server (called during configure)
+    private func fetchExperiments() {
+        networkClient.fetchExperiments { [weak self] result in
+            guard let self = self else { return }
+
+            switch result {
+            case .success(let fetchedExperiments):
+                self.experiments = fetchedExperiments
+                self.experimentsFetched = true
+                self.debugLog("Fetched \(fetchedExperiments.count) experiments")
+            case .failure(let error):
+                self.experimentsFetched = true  // Mark as fetched even on failure
+                self.debugLog("Failed to fetch experiments: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Sets experiments directly (for testing purposes)
+    internal func setExperiments(_ experiments: [MGMExperiment]) {
+        self.experiments = experiments
+        self.experimentsFetched = true
     }
 
     // MARK: - Flushing
@@ -740,6 +837,16 @@ public extension MostlyGoodMetrics {
     static func getSuperProperties() -> [String: Any] {
         shared?.getSuperProperties() ?? [:]
     }
+
+    /// Gets the variant for an experiment using the shared instance.
+    /// Returns a deterministic variant based on the user ID + experiment name hash.
+    /// The variant is automatically stored as a super property.
+    ///
+    /// - Parameter experimentName: The name/id of the experiment
+    /// - Returns: The variant string ('a', 'b', etc) or nil if experiment not found
+    static func getVariant(experimentName: String) -> String? {
+        shared?.getVariant(experimentName: experimentName)
+    }
 }
 
 // MARK: - User Profile
@@ -760,4 +867,25 @@ public struct UserProfile {
         self.email = email
         self.name = name
     }
+}
+
+// MARK: - Experiments / A/B Testing
+
+/// Represents an experiment for A/B testing
+public struct MGMExperiment: Codable {
+    /// The experiment identifier
+    public let id: String
+
+    /// The available variants for this experiment
+    public let variants: [String]
+
+    public init(id: String, variants: [String]) {
+        self.id = id
+        self.variants = variants
+    }
+}
+
+/// Response from the experiments API
+internal struct ExperimentsResponse: Codable {
+    let experiments: [MGMExperiment]
 }

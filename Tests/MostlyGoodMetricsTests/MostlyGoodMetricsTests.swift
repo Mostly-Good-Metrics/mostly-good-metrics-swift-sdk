@@ -838,6 +838,172 @@ final class MostlyGoodMetricsTests: XCTestCase {
         XCTAssertEqual(MostlyGoodMetrics.shared?.userId, "static_user")
     }
 
+    // MARK: - A/B Testing / getVariant Tests
+
+    func testGetVariantReturnsVariantForKnownExperiment() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        // Set up experiments
+        let experiments = [
+            MGMExperiment(id: "button-color", variants: ["a", "b"])
+        ]
+        client.setExperiments(experiments)
+        client.identify(userId: "test-user-123")
+
+        // Get variant
+        let variant = client.getVariant(experimentName: "button-color")
+
+        XCTAssertNotNil(variant)
+        XCTAssertTrue(variant == "a" || variant == "b", "Variant should be 'a' or 'b', got '\(variant ?? "nil")'")
+    }
+
+    func testGetVariantReturnsNilForUnknownExperiment() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        // Set up experiments
+        let experiments = [
+            MGMExperiment(id: "button-color", variants: ["a", "b"])
+        ]
+        client.setExperiments(experiments)
+
+        // Get variant for unknown experiment
+        let variant = client.getVariant(experimentName: "unknown-experiment")
+
+        XCTAssertNil(variant)
+    }
+
+    func testGetVariantIsDeterministic() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        // Set up experiments
+        let experiments = [
+            MGMExperiment(id: "button-color", variants: ["a", "b"])
+        ]
+        client.setExperiments(experiments)
+        client.identify(userId: "consistent-user")
+
+        // Get variant multiple times
+        let variant1 = client.getVariant(experimentName: "button-color")
+        let variant2 = client.getVariant(experimentName: "button-color")
+        let variant3 = client.getVariant(experimentName: "button-color")
+
+        XCTAssertEqual(variant1, variant2)
+        XCTAssertEqual(variant2, variant3)
+    }
+
+    func testGetVariantDifferentUsersGetDifferentVariants() {
+        // This tests that the hash function distributes users across variants
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+
+        // Set up experiments with 2 variants
+        let experiments = [
+            MGMExperiment(id: "test-experiment", variants: ["control", "treatment"])
+        ]
+
+        // Try many users and collect their variants
+        var variants: [String: Int] = ["control": 0, "treatment": 0]
+
+        for i in 0..<100 {
+            let client = MostlyGoodMetrics(configuration: config, storage: storage)
+            client.setExperiments(experiments)
+            client.identify(userId: "user-\(i)")
+
+            if let variant = client.getVariant(experimentName: "test-experiment") {
+                variants[variant, default: 0] += 1
+            }
+        }
+
+        // Both variants should have been assigned (distribution doesn't need to be perfect)
+        XCTAssertGreaterThan(variants["control"] ?? 0, 0, "Control variant should have some users")
+        XCTAssertGreaterThan(variants["treatment"] ?? 0, 0, "Treatment variant should have some users")
+    }
+
+    func testGetVariantSetsSuperProperty() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        // Clear super properties
+        client.clearSuperProperties()
+
+        // Set up experiments
+        let experiments = [
+            MGMExperiment(id: "button-color", variants: ["a", "b"])
+        ]
+        client.setExperiments(experiments)
+        client.identify(userId: "test-user")
+
+        // Get variant
+        _ = client.getVariant(experimentName: "button-color")
+
+        // Check super property was set
+        let superProps = client.getSuperProperties()
+        XCTAssertNotNil(superProps["experiment_button_color"])
+    }
+
+    func testGetVariantConvertsToSnakeCase() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        // Clear super properties
+        client.clearSuperProperties()
+
+        // Set up experiments with camelCase and kebab-case names
+        let experiments = [
+            MGMExperiment(id: "buttonColor", variants: ["a", "b"]),
+            MGMExperiment(id: "header-style", variants: ["a", "b"])
+        ]
+        client.setExperiments(experiments)
+        client.identify(userId: "test-user")
+
+        // Get variants
+        _ = client.getVariant(experimentName: "buttonColor")
+        _ = client.getVariant(experimentName: "header-style")
+
+        // Check super properties were set with snake_case
+        let superProps = client.getSuperProperties()
+        XCTAssertNotNil(superProps["experiment_button_color"], "camelCase should be converted to snake_case")
+        XCTAssertNotNil(superProps["experiment_header_style"], "kebab-case should be converted to snake_case")
+    }
+
+    func testGetVariantWithMultipleVariants() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
+
+        // Set up experiments with 4 variants
+        let experiments = [
+            MGMExperiment(id: "pricing", variants: ["a", "b", "c", "d"])
+        ]
+        client.setExperiments(experiments)
+        client.identify(userId: "test-user")
+
+        // Get variant
+        let variant = client.getVariant(experimentName: "pricing")
+
+        XCTAssertNotNil(variant)
+        XCTAssertTrue(["a", "b", "c", "d"].contains(variant!), "Variant should be one of a, b, c, d")
+    }
+
+    func testStaticGetVariant() {
+        MostlyGoodMetrics.configure(apiKey: "test_key")
+
+        // Set up experiments via shared instance
+        let experiments = [
+            MGMExperiment(id: "static-test", variants: ["x", "y"])
+        ]
+        MostlyGoodMetrics.shared?.setExperiments(experiments)
+        MostlyGoodMetrics.identify(userId: "static-user")
+
+        // Get variant using static method
+        let variant = MostlyGoodMetrics.getVariant(experimentName: "static-test")
+
+        XCTAssertNotNil(variant)
+        XCTAssertTrue(variant == "x" || variant == "y")
+    }
+
     func testClientNewSession() {
         let config = MGMConfiguration(apiKey: "test_key")
         let client = MostlyGoodMetrics(configuration: config, storage: InMemoryEventStorage())
@@ -2098,6 +2264,13 @@ class MockNetworkClient: NetworkClientProtocol {
             completion(self.result)
         }
     }
+
+    func fetchExperiments(completion: @escaping (Result<[MGMExperiment], MGMError>) -> Void) {
+        // Return empty experiments by default
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            completion(.success([]))
+        }
+    }
 }
 
 /// Mock network client that returns results in sequence
@@ -2115,6 +2288,13 @@ class SequentialMockNetworkClient: NetworkClientProtocol {
 
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
             completion(result)
+        }
+    }
+
+    func fetchExperiments(completion: @escaping (Result<[MGMExperiment], MGMError>) -> Void) {
+        // Return empty experiments by default
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            completion(.success([]))
         }
     }
 }
