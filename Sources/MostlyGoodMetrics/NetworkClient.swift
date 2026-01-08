@@ -9,7 +9,7 @@ import WatchKit
 #endif
 
 /// SDK version for User-Agent header
-internal let sdkVersion = "0.5.5"
+internal let sdkVersion = "0.6.0"
 
 /// Protocol for network operations (allows mocking in tests)
 protocol NetworkClientProtocol {
