@@ -19,7 +19,7 @@ After completing a task, you MUST follow these steps:
 6. **Verify the PR URL is displayed before stopping**
 
 ## Task Source
-Tasks are managed in `../../hive_tasks.yaml` (relative to your working directory).
+Tasks are managed in `../hive_tasks.yaml` (relative to your working directory).
 - Your lane: `swift-sdk`
 - Check the `backlog` section for pending tasks
 - Move tasks to `in_progress` when you start
@@ -28,4 +28,3 @@ Tasks are managed in `../../hive_tasks.yaml` (relative to your working directory
 ---
 ## Project-Specific Instructions
 <!-- Add your custom instructions below this line -->
-
