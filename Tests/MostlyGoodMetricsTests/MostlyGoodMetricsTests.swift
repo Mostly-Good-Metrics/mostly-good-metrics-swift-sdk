@@ -304,12 +304,14 @@ final class MostlyGoodMetricsTests: XCTestCase {
         client.track("ValidEvent")
         client.track("event123")
         client.track("a")
+        client.track("Button Clicked")
+        client.track("User Signed Up")
         client.track("$app_opened")  // System event
         client.track("$custom_system")
 
         let expectation = self.expectation(description: "Valid events")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            XCTAssertEqual(storage.eventCount(), 6)
+            XCTAssertEqual(storage.eventCount(), 8)
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1)
@@ -325,7 +327,6 @@ final class MostlyGoodMetricsTests: XCTestCase {
         client.track("invalid-name") // contains hyphen
         client.track("") // empty
         client.track(String(repeating: "a", count: 300)) // too long
-        client.track("event name") // contains space
         client.track("event.name") // contains dot
 
         let expectation = self.expectation(description: "Invalid events")

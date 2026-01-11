@@ -525,7 +525,7 @@ public final class MostlyGoodMetrics {
         guard !name.isEmpty, name.count <= 255 else { return false }
 
         // Allow $ prefix for system events, otherwise must start with letter
-        let pattern = "^\\$?[a-zA-Z][a-zA-Z0-9_]*$"
+        let pattern = "^\\$?[a-zA-Z][a-zA-Z0-9_]*(?: [a-zA-Z0-9_]+)*$"
         return name.range(of: pattern, options: .regularExpression) != nil
     }
 
