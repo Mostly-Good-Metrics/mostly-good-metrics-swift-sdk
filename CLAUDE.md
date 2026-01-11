@@ -47,3 +47,24 @@ Public APIs include:
 - Public class/struct names and their public properties
 - Configuration options
 - Event names and property keys sent to the server
+
+### 5. Releasing
+
+**Always use Fastlane for releases** - it generates proper release notes via Claude.
+
+Setup (one time):
+```
+bundle install
+```
+
+To release:
+```
+bundle exec fastlane release
+```
+
+This will:
+1. Prompt for version bump type (patch/minor/major)
+2. Generate release notes from merged PRs
+3. Create a version bump PR
+4. Wait for CI checks
+5. Output the merge command when ready
