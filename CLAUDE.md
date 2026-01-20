@@ -65,6 +65,16 @@ bundle exec fastlane release
 This will:
 1. Prompt for version bump type (patch/minor/major)
 2. Generate release notes from merged PRs
-3. Create a version bump PR
-4. Wait for CI checks
-5. Output the merge command when ready
+3. Create a version bump PR and output the PR URL
+
+After Fastlane completes:
+1. Monitor the PR checks with `gh pr checks <PR_NUMBER>`
+2. When all checks pass, merge with `gh pr merge <PR_NUMBER> --squash --delete-branch`
+3. CI automatically publishes to CocoaPods and creates a GitHub release
+
+**DO NOT:**
+- Manually edit version in `.podspec`
+- Run `pod trunk push` directly
+- Create version tags manually
+
+Fastlane and CI handle all versioning and publishing automatically.
