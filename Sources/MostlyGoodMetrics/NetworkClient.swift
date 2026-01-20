@@ -11,12 +11,26 @@ import WatchKit
 /// SDK version for User-Agent header
 internal let sdkVersion = "0.6.1"
 
+/// Response from the experiments API
+struct ExperimentsResponse: Codable {
+    let assignedVariants: [String: String]
+
+    enum CodingKeys: String, CodingKey {
+        case assignedVariants = "assigned_variants"
+    }
+}
+
 /// Protocol for network operations (allows mocking in tests)
 protocol NetworkClientProtocol {
     func sendEvents(
         _ events: [MGMEvent],
         context: MGMEventContext?,
         completion: @escaping (Result<Void, MGMError>) -> Void
+    )
+
+    func fetchExperiments(
+        userId: String,
+        completion: @escaping (Result<[String: String], MGMError>) -> Void
     )
 }
 
@@ -149,6 +163,94 @@ final class NetworkClient: NetworkClientProtocol {
             case 429:
                 let retryAfter = self.parseRetryAfter(from: httpResponse)
                 self.retryAfterDate = Date().addingTimeInterval(retryAfter)
+                self.debugLog("Rate limited, retry after \(retryAfter) seconds")
+                completion(.failure(.rateLimited(retryAfter: retryAfter)))
+
+            case 500...599:
+                let errorMessage = self.parseErrorMessage(from: data)
+                self.debugLog("Server error: \(errorMessage)")
+                completion(.failure(.serverError(httpResponse.statusCode, errorMessage)))
+
+            default:
+                self.debugLog("Unexpected status code: \(httpResponse.statusCode)")
+                completion(.failure(.unexpectedStatusCode(httpResponse.statusCode)))
+            }
+        }
+
+        task.resume()
+    }
+
+    /// Fetches experiment assignments for a user
+    /// - Parameters:
+    ///   - userId: The user identifier
+    ///   - completion: Completion handler with result containing assigned variants
+    func fetchExperiments(
+        userId: String,
+        completion: @escaping (Result<[String: String], MGMError>) -> Void
+    ) {
+        guard var urlComponents = URLComponents(url: configuration.baseURL.appendingPathComponent("v1/experiments"), resolvingAgainstBaseURL: true) else {
+            completion(.failure(.invalidResponse))
+            return
+        }
+
+        urlComponents.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+
+        guard let url = urlComponents.url else {
+            completion(.failure(.invalidResponse))
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(configuration.apiKey, forHTTPHeaderField: "X-MGM-Key")
+        request.setValue(buildUserAgent(), forHTTPHeaderField: "User-Agent")
+
+        if configuration.enableDebugLogging {
+            debugLog("Fetching experiments for user: \(userId)")
+        }
+
+        let task = session.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                self.debugLog("Network error fetching experiments: \(error.localizedDescription)")
+                completion(.failure(.networkError(error)))
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                completion(.failure(.invalidResponse))
+                return
+            }
+
+            switch httpResponse.statusCode {
+            case 200:
+                guard let data = data else {
+                    completion(.failure(.invalidResponse))
+                    return
+                }
+
+                do {
+                    let decoder = JSONDecoder()
+                    let experimentsResponse = try decoder.decode(ExperimentsResponse.self, from: data)
+                    self.debugLog("Received \(experimentsResponse.assignedVariants.count) experiment assignments")
+                    completion(.success(experimentsResponse.assignedVariants))
+                } catch {
+                    self.debugLog("Failed to decode experiments response: \(error)")
+                    completion(.failure(.invalidResponse))
+                }
+
+            case 401:
+                self.debugLog("Unauthorized - invalid API key")
+                completion(.failure(.unauthorized))
+
+            case 403:
+                let errorMessage = self.parseErrorMessage(from: data)
+                self.debugLog("Forbidden: \(errorMessage)")
+                completion(.failure(.forbidden(errorMessage)))
+
+            case 429:
+                let retryAfter = self.parseRetryAfter(from: httpResponse)
                 self.debugLog("Rate limited, retry after \(retryAfter) seconds")
                 completion(.failure(.rateLimited(retryAfter: retryAfter)))
 
