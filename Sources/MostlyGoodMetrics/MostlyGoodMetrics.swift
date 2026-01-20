@@ -35,6 +35,26 @@ public final class MostlyGoodMetrics {
     private static let identifyHashKey = "MGM_identifyHash"
     private static let identifyTimestampKey = "MGM_identifyTimestamp"
 
+    // Keys for experiments cache
+    private static let experimentsCacheKey = "MGM_experimentsCache"
+    private static let experimentsFetchedAtKey = "MGM_experimentsFetchedAt"
+    private static let experimentsCachedUserIdKey = "MGM_experimentsCachedUserId"
+
+    /// Time-to-live for experiments cache (24 hours)
+    private static let experimentsCacheTTL: TimeInterval = 24 * 60 * 60
+
+    /// Assigned experiment variants (keyed by experiment name)
+    private var assignedVariants: [String: String] = [:]
+
+    /// Whether experiments have been loaded
+    private var experimentsLoaded: Bool = false
+
+    /// Continuations waiting for experiments to load
+    private var experimentsContinuations: [CheckedContinuation<Void, Never>] = []
+
+    /// Lock for thread-safe access to experiments state
+    private let experimentsLock = NSLock()
+
     /// Current user ID (persisted across sessions)
     public var userId: String? {
         didSet {
@@ -100,6 +120,7 @@ public final class MostlyGoodMetrics {
         startFlushTimer()
         setupAppLifecycleObservers()
         trackInstallOrUpdate()
+        loadExperiments()
 
         debugLog("Initialized with \(self.storage.eventCount()) cached events")
     }
@@ -117,6 +138,8 @@ public final class MostlyGoodMetrics {
         startFlushTimer()
         setupAppLifecycleObservers()
         // Skip auto-tracking for test instances
+        // Mark experiments as loaded for test instances
+        experimentsLoaded = true
     }
 
     /// Internal initializer for testing with custom storage and network client
@@ -130,6 +153,29 @@ public final class MostlyGoodMetrics {
         self.sessionId = UUID().uuidString
 
         // Skip timers and lifecycle observers for test instances
+        // Mark experiments as loaded for test instances
+        experimentsLoaded = true
+    }
+
+    /// Internal initializer for testing A/B testing functionality
+    internal init(
+        configuration: MGMConfiguration,
+        storage: EventStorage,
+        networkClient: NetworkClientProtocol,
+        skipExperimentsLoad: Bool
+    ) {
+        self.configuration = configuration
+        self.storage = storage
+        self.networkClient = networkClient
+
+        self.userId = nil
+        self.anonymousId = Self.initializeAnonymousId()
+        self.sessionId = UUID().uuidString
+
+        // Don't auto-load experiments if we want to test the loading flow
+        if !skipExperimentsLoad {
+            experimentsLoaded = true
+        }
     }
 
     deinit {
@@ -195,12 +241,21 @@ public final class MostlyGoodMetrics {
     /// Profile data (email, name) is sent to the backend via the $identify event.
     /// Debouncing: only sends $identify if payload changed or >24h since last send.
     ///
+    /// When the user ID changes, the experiments cache is invalidated and experiments
+    /// are refetched from the server.
+    ///
     /// - Parameters:
     ///   - userId: The user identifier
     ///   - profile: Optional profile data (email, name)
     public func identify(userId: String, profile: UserProfile? = nil) {
+        let previousUserId = self.userId
         self.userId = userId
         debugLog("Identified user: \(userId)")
+
+        // If user ID changed, refetch experiments
+        if previousUserId != userId {
+            refetchExperiments()
+        }
 
         // If profile data is provided, check if we should send $identify event
         if let profile = profile, profile.email != nil || profile.name != nil {
@@ -263,6 +318,157 @@ public final class MostlyGoodMetrics {
     private func clearIdentifyState() {
         UserDefaults.standard.removeObject(forKey: Self.identifyHashKey)
         UserDefaults.standard.removeObject(forKey: Self.identifyTimestampKey)
+    }
+
+    // MARK: - A/B Testing (Experiments)
+
+    /// Waits for experiments to be loaded.
+    /// Call this before accessing `getVariant` if you need to ensure experiments are available.
+    /// - Returns: Void when experiments are loaded
+    @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
+    public func ready() async {
+        // Check if already loaded (synchronous check)
+        let isLoaded = experimentsLock.withLock { experimentsLoaded }
+        if isLoaded {
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            experimentsLock.withLock {
+                if experimentsLoaded {
+                    continuation.resume()
+                } else {
+                    experimentsContinuations.append(continuation)
+                }
+            }
+        }
+    }
+
+    /// Gets the variant assigned to a specific experiment.
+    /// When a variant is accessed, it's automatically registered as a super property
+    /// with the key `$experiment_{snake_case_name}`.
+    ///
+    /// - Parameter experimentName: The name of the experiment
+    /// - Returns: The assigned variant, or nil if the experiment doesn't exist or experiments haven't loaded
+    public func getVariant(_ experimentName: String) -> String? {
+        experimentsLock.lock()
+        let variant = assignedVariants[experimentName]
+        experimentsLock.unlock()
+
+        if let variant = variant {
+            // Set as super property with $experiment_ prefix
+            let snakeCaseName = experimentName.toSnakeCase()
+            setSuperProperty("$experiment_\(snakeCaseName)", value: variant)
+            debugLog("Variant '\(variant)' for experiment '\(experimentName)' set as super property")
+        }
+
+        return variant
+    }
+
+    /// Loads experiments from cache or fetches from server
+    private func loadExperiments() {
+        // Check if we have valid cached experiments
+        if let cachedVariants = loadCachedExperiments() {
+            experimentsLock.lock()
+            assignedVariants = cachedVariants
+            experimentsLoaded = true
+            let continuations = experimentsContinuations
+            experimentsContinuations.removeAll()
+            experimentsLock.unlock()
+
+            debugLog("Loaded \(cachedVariants.count) experiments from cache")
+            continuations.forEach { $0.resume() }
+            return
+        }
+
+        // Fetch from server
+        fetchExperimentsFromServer()
+    }
+
+    /// Fetches experiments from the server
+    private func fetchExperimentsFromServer() {
+        networkClient.fetchExperiments(userId: effectiveUserId) { [weak self] result in
+            guard let self = self else { return }
+
+            switch result {
+            case .success(let variants):
+                self.experimentsLock.lock()
+                self.assignedVariants = variants
+                self.experimentsLoaded = true
+                let continuations = self.experimentsContinuations
+                self.experimentsContinuations.removeAll()
+                self.experimentsLock.unlock()
+
+                // Cache the results
+                self.cacheExperiments(variants, userId: self.effectiveUserId)
+
+                self.debugLog("Fetched \(variants.count) experiment assignments")
+                continuations.forEach { $0.resume() }
+
+            case .failure(let error):
+                // Mark experiments as loaded even on failure to avoid blocking forever
+                self.experimentsLock.lock()
+                self.experimentsLoaded = true
+                let continuations = self.experimentsContinuations
+                self.experimentsContinuations.removeAll()
+                self.experimentsLock.unlock()
+
+                self.debugLog("Failed to fetch experiments: \(error.localizedDescription)")
+                continuations.forEach { $0.resume() }
+            }
+        }
+    }
+
+    /// Loads cached experiments if they exist and are valid
+    /// - Returns: Cached variants if valid, nil otherwise
+    private func loadCachedExperiments() -> [String: String]? {
+        let defaults = UserDefaults.standard
+
+        guard let cachedUserId = defaults.string(forKey: Self.experimentsCachedUserIdKey),
+              cachedUserId == effectiveUserId,
+              let fetchedAt = defaults.object(forKey: Self.experimentsFetchedAtKey) as? Date,
+              Date().timeIntervalSince(fetchedAt) < Self.experimentsCacheTTL,
+              let data = defaults.data(forKey: Self.experimentsCacheKey),
+              let variants = try? JSONDecoder().decode([String: String].self, from: data) else {
+            return nil
+        }
+
+        return variants
+    }
+
+    /// Caches experiments to UserDefaults
+    /// - Parameters:
+    ///   - variants: The variants to cache
+    ///   - userId: The user ID these variants belong to
+    private func cacheExperiments(_ variants: [String: String], userId: String) {
+        let defaults = UserDefaults.standard
+
+        if let data = try? JSONEncoder().encode(variants) {
+            defaults.set(data, forKey: Self.experimentsCacheKey)
+            defaults.set(Date(), forKey: Self.experimentsFetchedAtKey)
+            defaults.set(userId, forKey: Self.experimentsCachedUserIdKey)
+            debugLog("Cached \(variants.count) experiment assignments")
+        }
+    }
+
+    /// Clears the experiments cache
+    private func clearExperimentsCache() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: Self.experimentsCacheKey)
+        defaults.removeObject(forKey: Self.experimentsFetchedAtKey)
+        defaults.removeObject(forKey: Self.experimentsCachedUserIdKey)
+        debugLog("Cleared experiments cache")
+    }
+
+    /// Refetches experiments from the server (used after identify)
+    private func refetchExperiments() {
+        experimentsLock.lock()
+        assignedVariants.removeAll()
+        experimentsLoaded = false
+        experimentsLock.unlock()
+
+        clearExperimentsCache()
+        fetchExperimentsFromServer()
     }
 
     /// Starts a new session with a fresh session ID
@@ -740,6 +946,20 @@ public extension MostlyGoodMetrics {
     static func getSuperProperties() -> [String: Any] {
         shared?.getSuperProperties() ?? [:]
     }
+
+    /// Waits for experiments to be loaded using the shared instance.
+    /// - Returns: Void when experiments are loaded
+    @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
+    static func ready() async {
+        await shared?.ready()
+    }
+
+    /// Gets the variant assigned to a specific experiment using the shared instance.
+    /// - Parameter experimentName: The name of the experiment
+    /// - Returns: The assigned variant, or nil if the experiment doesn't exist
+    static func getVariant(_ experimentName: String) -> String? {
+        shared?.getVariant(experimentName)
+    }
 }
 
 // MARK: - User Profile
@@ -759,5 +979,42 @@ public struct UserProfile {
     public init(email: String? = nil, name: String? = nil) {
         self.email = email
         self.name = name
+    }
+}
+
+// MARK: - String Extensions
+
+extension String {
+    /// Converts a string to snake_case
+    /// Examples:
+    /// - "myExperiment" -> "my_experiment"
+    /// - "My Experiment" -> "my_experiment"
+    /// - "my-experiment" -> "my_experiment"
+    /// - "MyExperiment123" -> "my_experiment123"
+    func toSnakeCase() -> String {
+        // First, replace spaces and hyphens with underscores
+        let normalized = self.replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "-", with: "_")
+
+        // Then handle camelCase by inserting underscores before uppercase letters
+        var snakeCase = ""
+        for (index, char) in normalized.enumerated() {
+            if char.isUppercase && index > 0 {
+                let previousIndex = normalized.index(normalized.startIndex, offsetBy: index - 1)
+                let previousChar = normalized[previousIndex]
+                // Only add underscore if previous char is lowercase (to handle consecutive uppercase)
+                if previousChar.isLowercase || previousChar.isNumber {
+                    snakeCase.append("_")
+                }
+            }
+            snakeCase.append(char.lowercased())
+        }
+
+        // Clean up multiple consecutive underscores
+        while snakeCase.contains("__") {
+            snakeCase = snakeCase.replacingOccurrences(of: "__", with: "_")
+        }
+
+        return snakeCase
     }
 }
