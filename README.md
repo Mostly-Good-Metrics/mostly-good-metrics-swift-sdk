@@ -101,18 +101,7 @@ When `trackAppLifecycleEvents` is enabled (default), the SDK automatically track
 | `$app_opened` | App became active (foreground) | - |
 | `$app_backgrounded` | App resigned active (background) | - |
 
-### macOS Lifecycle Event Behavior
-
-On macOS, window focus changes happen frequently (Cmd-Tab, clicking other windows, etc.), which would generate excessive lifecycle events. To address this, the SDK applies debouncing on macOS:
-
-- **`$app_backgrounded`**: Not tracked on macOS (focus changes are too frequent)
-- **`$app_opened`**: Only tracked if the app was inactive for **at least 5 seconds**
-
-This ensures you get meaningful "app opened" events when users return to your app after a meaningful absence, without noise from quick window switches.
-
-> **Note:** Events are still flushed on every focus change regardless of debouncing, ensuring data is reliably sent to the server.
-
-## Automatic Context
+## Automatic Context/Properties
 
 Every event automatically includes:
 
@@ -158,6 +147,7 @@ MostlyGoodMetrics.track("checkout", properties: [
     "int_prop": 42,
     "double_prop": 3.14,
     "bool_prop": true,
+    "null_prop": nil,
     "list_prop": ["a", "b", "c"],
     "nested": [
         "key": "value"
@@ -169,6 +159,25 @@ MostlyGoodMetrics.track("checkout", properties: [
 - String values: truncated to 1000 characters
 - Nesting depth: max 3 levels
 - Total properties size: max 10KB
+
+## User Identification
+
+Associate events with a specific user by calling `identify()`:
+
+```swift
+// Set user identity (e.g., after login)
+MostlyGoodMetrics.identify(userId: "user_123")
+```
+
+The user ID persists across app launches until explicitly reset.
+
+To clear the user identity (e.g., on logout):
+
+```swift
+MostlyGoodMetrics.shared?.resetIdentity()
+```
+
+After calling `resetIdentity()`, subsequent events will not include a user ID until `identify()` is called again.
 
 ## Manual Flush
 
@@ -219,7 +228,20 @@ Output example:
 [MostlyGoodMetrics] Successfully flushed 4 events
 ```
 
-## Thread Safety
+## Platform-Specific Behavior
+
+### macOS Lifecycle Event Behavior
+
+On macOS, window focus changes happen frequently (Cmd-Tab, clicking other windows, etc.), which would generate excessive lifecycle events. To address this, the SDK applies debouncing on macOS:
+
+- **`$app_backgrounded`**: Not tracked on macOS (focus changes are too frequent)
+- **`$app_opened`**: Only tracked if the app was inactive for **at least 5 seconds**
+
+This ensures you get meaningful "app opened" events when users return to your app after a meaningful absence, without noise from quick window switches.
+
+> **Note:** Events are still flushed on every focus change regardless of debouncing, ensuring data is reliably sent to the server.
+
+### Thread Safety
 
 The SDK is fully thread-safe. You can call `track()` from any thread.
 
