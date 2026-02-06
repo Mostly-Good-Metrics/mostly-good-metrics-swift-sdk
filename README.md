@@ -66,7 +66,7 @@ For more control, use `MGMConfiguration`:
 ```swift
 let config = MGMConfiguration(
     apiKey: "mgm_proj_your_api_key",
-    baseURL: URL(string: "https://mostlygoodmetrics.com")!,
+    baseURL: URL(string: "https://ingest.mostlygoodmetrics.com")!,
     environment: "production",
     maxBatchSize: 100,
     flushInterval: 30,
@@ -81,7 +81,7 @@ MostlyGoodMetrics.configure(with: config)
 | Option | Default | Description |
 |--------|---------|-------------|
 | `apiKey` | Required | Your API key |
-| `baseURL` | `https://mostlygoodmetrics.com` | API endpoint |
+| `baseURL` | `https://ingest.mostlygoodmetrics.com` | API endpoint |
 | `environment` | `"production"` | Environment name |
 | `bundleId` | App's bundle ID | Override bundle identifier |
 | `maxBatchSize` | `100` | Events per batch (1-1000) |
