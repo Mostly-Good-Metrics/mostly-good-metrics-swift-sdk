@@ -66,7 +66,7 @@ For more control, use `MGMConfiguration`:
 ```swift
 let config = MGMConfiguration(
     apiKey: "mgm_proj_your_api_key",
-    baseURL: URL(string: "https://mostlygoodmetrics.com")!,
+    baseURL: URL(string: "https://ingest.mostlygoodmetrics.com")!,
     environment: "production",
     maxBatchSize: 100,
     flushInterval: 30,
@@ -81,7 +81,7 @@ MostlyGoodMetrics.configure(with: config)
 | Option | Default | Description |
 |--------|---------|-------------|
 | `apiKey` | Required | Your API key |
-| `baseURL` | `https://mostlygoodmetrics.com` | API endpoint |
+| `baseURL` | `https://ingest.mostlygoodmetrics.com` | API endpoint |
 | `environment` | `"production"` | Environment name |
 | `bundleId` | App's bundle ID | Override bundle identifier |
 | `maxBatchSize` | `100` | Events per batch (1-1000) |
@@ -133,7 +133,7 @@ Every event automatically includes:
 
 Event names must:
 - Start with a letter (or `$` for system events)
-- Contain only alphanumeric characters and underscores
+- Contain only alphanumeric characters, underscores, and spaces
 - Be 255 characters or less
 
 ```swift
@@ -141,11 +141,11 @@ Event names must:
 MostlyGoodMetrics.track("button_clicked")
 MostlyGoodMetrics.track("PurchaseCompleted")
 MostlyGoodMetrics.track("step_1_completed")
+MostlyGoodMetrics.track("button clicked")     // spaces allowed
 
 // Invalid (will be ignored)
-MostlyGoodMetrics.track("123_event")      // starts with number
-MostlyGoodMetrics.track("event-name")     // contains hyphen
-MostlyGoodMetrics.track("event name")     // contains space
+MostlyGoodMetrics.track("123_event")          // starts with number
+MostlyGoodMetrics.track("event-name")         // contains hyphen
 ```
 
 ## Properties
@@ -158,6 +158,7 @@ MostlyGoodMetrics.track("checkout", properties: [
     "int_prop": 42,
     "double_prop": 3.14,
     "bool_prop": true,
+    "null_prop": NSNull(),
     "list_prop": ["a", "b", "c"],
     "nested": [
         "key": "value"
@@ -169,6 +170,32 @@ MostlyGoodMetrics.track("checkout", properties: [
 - String values: truncated to 1000 characters
 - Nesting depth: max 3 levels
 - Total properties size: max 10KB
+
+## Super Properties
+
+Set properties that will be included with every event:
+
+```swift
+// Set a single super property
+MostlyGoodMetrics.setSuperProperty("plan", value: "premium")
+
+// Set multiple super properties
+MostlyGoodMetrics.setSuperProperties([
+    "plan": "premium",
+    "tier": "gold"
+])
+
+// Get all super properties
+let props = MostlyGoodMetrics.getSuperProperties()
+
+// Remove a super property
+MostlyGoodMetrics.removeSuperProperty("plan")
+
+// Clear all super properties
+MostlyGoodMetrics.clearSuperProperties()
+```
+
+Super properties are useful for values that remain constant across many events, such as user subscription tier or A/B test variants.
 
 ## Manual Flush
 
