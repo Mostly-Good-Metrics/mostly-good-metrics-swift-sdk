@@ -10,12 +10,12 @@ A lightweight Swift SDK for tracking analytics events with [MostlyGoodMetrics](h
   - [UIKit Initialization](#uikit-initialization)
   - [SwiftUI Initialization](#swiftui-initialization)
 - [Configuration Options](#configuration-options)
-- [Automatic Behavior](#automatic-behavior)
 - [Automatic Events](#automatic-events)
 - [Automatic Context](#automatic-context)
 - [Event Naming](#event-naming)
 - [Properties](#properties)
 - [Manual Flush](#manual-flush)
+- [Automatic Behavior](#automatic-behavior)
 - [Debug Logging](#debug-logging)
 - [Thread Safety](#thread-safety)
 - [License](#license)
@@ -142,20 +142,6 @@ MostlyGoodMetrics.configure(with: config)
 | `enableDebugLogging` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
 
-## Automatic Behavior
-
-The SDK automatically:
-
-- **Persists events** to disk, surviving app restarts
-- **Batches events** for efficient network usage
-- **Flushes on interval** (default: every 30 seconds)
-- **Flushes on background** when the app resigns active
-- **Retries on failure** for network errors (events are preserved)
-- **Compresses payloads** using gzip for requests > 1KB
-- **Handles rate limiting** by respecting `Retry-After` headers
-- **Persists user ID** across app launches
-- **Generates session IDs** per app launch
-
 ## Automatic Events
 
 When `trackAppLifecycleEvents` is enabled (default), the SDK automatically tracks:
@@ -250,6 +236,20 @@ MostlyGoodMetrics.shared?.flush { result in
     }
 }
 ```
+
+## Automatic Behavior
+
+The SDK automatically:
+
+- **Persists events** to disk, surviving app restarts
+- **Batches events** for efficient network usage
+- **Flushes on interval** (default: every 30 seconds)
+- **Flushes on background** when the app resigns active
+- **Retries on failure** for network errors (events are preserved)
+- **Compresses payloads** using gzip for requests > 1KB
+- **Handles rate limiting** by respecting `Retry-After` headers
+- **Persists user ID** across app launches
+- **Generates session IDs** per app launch
 
 ## Debug Logging
 
