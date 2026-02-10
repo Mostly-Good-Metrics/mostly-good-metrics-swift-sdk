@@ -6,6 +6,8 @@ A lightweight Swift SDK for tracking analytics events with [MostlyGoodMetrics](h
 
 - [Requirements](#requirements)
 - [Installation](#installation)
+  - [Swift Package Manager](#swift-package-manager)
+  - [CocoaPods](#cocoapods)
 - [Quick Start](#quick-start)
   - [UIKit Initialization](#uikit-initialization)
   - [SwiftUI Initialization](#swiftui-initialization)
@@ -14,10 +16,9 @@ A lightweight Swift SDK for tracking analytics events with [MostlyGoodMetrics](h
 - [Automatic Context](#automatic-context)
 - [Event Naming](#event-naming)
 - [Properties](#properties)
-- [Manual Flush](#manual-flush)
-- [Automatic Behavior](#automatic-behavior)
 - [Debug Logging](#debug-logging)
-- [Thread Safety](#thread-safety)
+- [Automatic Behavior](#automatic-behavior)
+- [Manual Flush](#manual-flush)
 - [License](#license)
 
 ## Requirements
@@ -38,6 +39,20 @@ dependencies: [
 ```
 
 Or in Xcode: **File > Add Package Dependencies** and enter the repository URL.
+
+### CocoaPods
+
+Add to your `Podfile`:
+
+```ruby
+pod 'MostlyGoodMetrics', '~> 0.6'
+```
+
+Then run:
+
+```bash
+pod install
+```
 
 ## Quick Start
 
@@ -172,12 +187,17 @@ Every event automatically includes:
 |-------|---------|-------------|
 | `platform` | `"ios"` | Platform (ios, macos, tvos, watchos, visionos) |
 | `os_version` | `"17.1"` | Operating system version |
-| `app_version` | `"1.0.0 (42)"` | App version with build number |
+| `app_version` | `"1.0.0"` | App version (CFBundleShortVersionString) |
+| `app_build_number` | `"42"` | App build number (CFBundleVersion) |
 | `environment` | `"production"` | Environment from configuration |
-| `session_id` | `"uuid..."` | Unique session ID (per app launch) |
-| `user_id` | `"user_123"` | User ID (if set via `identify()`) |
-| `$device_type` | `"phone"` | Device type (phone, tablet, desktop, tv, watch, vision) |
-| `$device_model` | `"iPhone15,2"` | Device model identifier |
+| `session_id` | `"uuid..."` | Unique session ID (generated per app launch) |
+| `user_id` | `"user_123"` | User ID (if set via `identify()`) or anonymous ID |
+| `device_manufacturer` | `"Apple"` | Device manufacturer |
+| `locale` | `"en_US"` | User's locale from device settings |
+| `timezone` | `"America/New_York"` | User's timezone from device settings |
+| `$device_type` | `"phone"` | Device type (phone, tablet, desktop, tv, watch, vision, carplay) |
+| `$device_model` | `"iPhone15,2"` | Device model hardware identifier |
+| `$sdk` | `"swift"` | SDK identifier ("swift" or wrapper name if applicable) |
 
 > **Note:** The `$` prefix indicates reserved system events and properties. Avoid using `$` prefix for your own custom events.
 
@@ -222,35 +242,6 @@ MostlyGoodMetrics.track("checkout", properties: [
 - Nesting depth: max 3 levels
 - Total properties size: max 10KB
 
-## Manual Flush
-
-Events are automatically flushed periodically and when the app backgrounds. You can also trigger a manual flush:
-
-```swift
-MostlyGoodMetrics.shared?.flush { result in
-    switch result {
-    case .success:
-        print("Events flushed successfully")
-    case .failure(let error):
-        print("Flush failed: \(error.localizedDescription)")
-    }
-}
-```
-
-## Automatic Behavior
-
-The SDK automatically:
-
-- **Persists events** to disk, surviving app restarts
-- **Batches events** for efficient network usage
-- **Flushes on interval** (default: every 30 seconds)
-- **Flushes on background** when the app resigns active
-- **Retries on failure** for network errors (events are preserved)
-- **Compresses payloads** using gzip for requests > 1KB
-- **Handles rate limiting** by respecting `Retry-After` headers
-- **Persists user ID** across app launches
-- **Generates session IDs** per app launch
-
 ## Debug Logging
 
 Enable debug logging to see SDK activity:
@@ -271,9 +262,68 @@ Output example:
 [MostlyGoodMetrics] Successfully flushed 4 events
 ```
 
-## Thread Safety
+## Automatic Behavior
 
-The SDK is fully thread-safe. You can call `track()` from any thread.
+The SDK handles event delivery and lifecycle management automatically:
+
+### Event Processing
+
+- **Persists events** to disk, surviving app restarts and crashes
+- **Batches events** for efficient network usage (default: 100 events per batch)
+- **Compresses payloads** using gzip for requests > 1KB
+- **Validates events** and drops invalid ones with debug logging
+
+### Network & Reliability
+
+- **Flushes on interval** (default: every 30 seconds)
+- **Flushes on background** when the app resigns active
+- **Retries on failure** for network errors (events are preserved)
+- **Handles rate limiting** by respecting `Retry-After` headers
+- **Drops client errors** (4xx responses except rate limits) to prevent bad data buildup
+
+### Session & Identity
+
+- **Generates session IDs** once per app launch
+- **Persists user ID** across app launches via UserDefaults
+- **Generates anonymous IDs** (`$anon_xxxxxxxxxxxx` format) for unidentified users
+- **Debounces `$identify` events** to avoid redundant server calls (only sends if data changed or >24h elapsed)
+
+### Lifecycle Events
+
+When `trackAppLifecycleEvents` is enabled (default):
+
+- **`$app_installed`**: Tracked on first launch after install
+- **`$app_updated`**: Tracked on first launch after version change
+- **`$app_opened`**: Tracked when app becomes active (foreground)
+- **`$app_backgrounded`**: Tracked when app resigns active (background)
+
+**macOS Debouncing**: On macOS, window focus changes happen frequently (Cmd-Tab, clicking other windows). To prevent excessive events:
+- `$app_backgrounded` is **not tracked** on macOS
+- `$app_opened` is only tracked if the app was inactive for **at least 5 seconds**
+
+> **Note:** Events are still flushed on every focus change regardless of debouncing.
+
+### Thread Safety
+
+The SDK is fully thread-safe. All methods can be called from any thread:
+- Event tracking uses internal queues for safe concurrent access
+- Flush operations are serialized to prevent race conditions
+- Storage operations are atomic
+
+## Manual Flush
+
+Events are automatically flushed periodically and when the app backgrounds. You can also trigger a manual flush:
+
+```swift
+MostlyGoodMetrics.shared?.flush { result in
+    switch result {
+    case .success:
+        print("Events flushed successfully")
+    case .failure(let error):
+        print("Flush failed: \(error.localizedDescription)")
+    }
+}
+```
 
 ## License
 
