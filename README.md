@@ -2,6 +2,24 @@
 
 A lightweight Swift SDK for tracking analytics events with [MostlyGoodMetrics](https://mostlygoodmetrics.com).
 
+## Table of Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+  - [UIKit Initialization](#uikit-initialization)
+  - [SwiftUI Initialization](#swiftui-initialization)
+- [Configuration Options](#configuration-options)
+- [Automatic Behavior](#automatic-behavior)
+- [Automatic Events](#automatic-events)
+- [Automatic Context](#automatic-context)
+- [Event Naming](#event-naming)
+- [Properties](#properties)
+- [Manual Flush](#manual-flush)
+- [Debug Logging](#debug-logging)
+- [Thread Safety](#thread-safety)
+- [License](#license)
+
 ## Requirements
 
 - iOS 14.0+ / macOS 11.0+ / tvOS 14.0+ / watchOS 7.0+
@@ -25,12 +43,46 @@ Or in Xcode: **File > Add Package Dependencies** and enter the repository URL.
 
 ### 1. Initialize the SDK
 
-Initialize once at app launch (e.g., in `AppDelegate` or `@main` App struct):
+Initialize once at app launch:
+
+#### UIKit Initialization
+
+In your `AppDelegate`:
 
 ```swift
+import UIKit
 import MostlyGoodMetrics
 
-MostlyGoodMetrics.configure(apiKey: "mgm_proj_your_api_key")
+@main
+class AppDelegate: UIResponder, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        MostlyGoodMetrics.configure(apiKey: "mgm_proj_your_api_key")
+        return true
+    }
+}
+```
+
+#### SwiftUI Initialization
+
+In your `@main` App struct:
+
+```swift
+import SwiftUI
+import MostlyGoodMetrics
+
+@main
+struct MyApp: App {
+    init() {
+        MostlyGoodMetrics.configure(apiKey: "mgm_proj_your_api_key")
+    }
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+        }
+    }
+}
 ```
 
 ### 2. Track Events
@@ -89,6 +141,20 @@ MostlyGoodMetrics.configure(with: config)
 | `maxStoredEvents` | `10000` | Max cached events |
 | `enableDebugLogging` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
+
+## Automatic Behavior
+
+The SDK automatically:
+
+- **Persists events** to disk, surviving app restarts
+- **Batches events** for efficient network usage
+- **Flushes on interval** (default: every 30 seconds)
+- **Flushes on background** when the app resigns active
+- **Retries on failure** for network errors (events are preserved)
+- **Compresses payloads** using gzip for requests > 1KB
+- **Handles rate limiting** by respecting `Retry-After` headers
+- **Persists user ID** across app launches
+- **Generates session IDs** per app launch
 
 ## Automatic Events
 
@@ -184,20 +250,6 @@ MostlyGoodMetrics.shared?.flush { result in
     }
 }
 ```
-
-## Automatic Behavior
-
-The SDK automatically:
-
-- **Persists events** to disk, surviving app restarts
-- **Batches events** for efficient network usage
-- **Flushes on interval** (default: every 30 seconds)
-- **Flushes on background** when the app resigns active
-- **Retries on failure** for network errors (events are preserved)
-- **Compresses payloads** using gzip for requests > 1KB
-- **Handles rate limiting** by respecting `Retry-After` headers
-- **Persists user ID** across app launches
-- **Generates session IDs** per app launch
 
 ## Debug Logging
 
