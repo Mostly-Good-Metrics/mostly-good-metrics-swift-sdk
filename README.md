@@ -11,16 +11,16 @@ A lightweight Swift SDK for tracking analytics events with [MostlyGoodMetrics](h
 - [Quick Start](#quick-start)
   - [UIKit Initialization](#uikit-initialization)
   - [SwiftUI Initialization](#swiftui-initialization)
-- [Configuration Options](#configuration-options)
 - [User Identification](#user-identification)
-- [Tracking Events](#tracking-events)
+- [Configuration Options](#configuration-options)
 - [Automatic Events](#automatic-events)
 - [Automatic Context](#automatic-context)
+- [Automatic Behavior](#automatic-behavior)
 - [Event Naming](#event-naming)
 - [Properties](#properties)
-- [Debug Logging](#debug-logging)
-- [Automatic Behavior](#automatic-behavior)
 - [Manual Flush](#manual-flush)
+- [Debug Logging](#debug-logging)
+- [Thread Safety](#thread-safety)
 - [License](#license)
 
 ## Requirements
@@ -128,6 +128,34 @@ MostlyGoodMetrics.track("purchase_completed", properties: [
 
 That's it! Events are automatically batched and sent.
 
+## User Identification
+
+Associate events with specific users by calling `identify()`:
+
+```swift
+// Set user identity
+MostlyGoodMetrics.identify(userId: "user_123")
+```
+
+**Identity Persistence:**
+- User IDs persist across app launches via UserDefaults
+- The user ID is included in all subsequent events as the `user_id` field
+
+**Anonymous Users:**
+- Before calling `identify()`, users are tracked with an auto-generated anonymous ID
+- Format: `$anon_xxxxxxxxxxxx` (12 random alphanumeric characters)
+- Anonymous IDs persist across app launches
+
+**Reset Identity:**
+
+Clear the user identity on logout:
+
+```swift
+MostlyGoodMetrics.shared?.resetIdentity()
+```
+
+This clears the persisted user ID and resets to anonymous tracking. Events will use the anonymous ID until `identify()` is called again.
+
 ## Configuration Options
 
 For more control, use `MGMConfiguration`:
@@ -159,52 +187,6 @@ MostlyGoodMetrics.configure(with: config)
 | `enableDebugLogging` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
 
-## User Identification
-
-Associate events with specific users by calling `identify()`:
-
-```swift
-// Set user identity
-MostlyGoodMetrics.identify(userId: "user_123")
-```
-
-**Identity Persistence:**
-- User IDs persist across app launches via UserDefaults
-- The user ID is included in all subsequent events as the `user_id` field
-
-**Anonymous Users:**
-- Before calling `identify()`, users are tracked with an auto-generated anonymous ID
-- Format: `$anon_xxxxxxxxxxxx` (12 random alphanumeric characters)
-- Anonymous IDs persist across app launches
-
-**Reset Identity:**
-
-Clear the user identity on logout:
-
-```swift
-MostlyGoodMetrics.shared?.resetIdentity()
-```
-
-This clears the persisted user ID and resets to anonymous tracking. Events will use the anonymous ID until `identify()` is called again.
-
-## Tracking Events
-
-Track custom events with optional properties:
-
-```swift
-// Simple event
-MostlyGoodMetrics.track("button_clicked")
-
-// Event with properties
-MostlyGoodMetrics.track("purchase_completed", properties: [
-    "product_id": "SKU123",
-    "price": 29.99,
-    "currency": "USD"
-])
-```
-
-Events are automatically enriched with context (platform, OS version, device info, etc.) and batched for efficient delivery.
-
 ## Automatic Events
 
 When `trackAppLifecycleEvents` is enabled (default), the SDK automatically tracks:
@@ -229,27 +211,82 @@ This ensures you get meaningful "app opened" events when users return to your ap
 
 ## Automatic Context
 
-Every event automatically includes the following context properties:
+Every event automatically includes contextual information to provide rich analytics capabilities. You don't need to manually add these fields.
 
-| Field | Example | Description |
-|-------|---------|-------------|
-| `client_event_id` | `"550e8400-e29b..."` | Unique UUID for deduplication |
-| `timestamp` | `2024-01-15T10:30:00.000Z` | ISO 8601 event timestamp |
-| `platform` | `"ios"` | Platform (ios, macos, tvos, watchos, visionos) |
-| `os_version` | `"17.1"` | Operating system version |
-| `app_version` | `"1.0.0"` | App version (CFBundleShortVersionString) |
-| `app_build_number` | `"42"` | App build number (CFBundleVersion) |
-| `environment` | `"production"` | Environment name from configuration |
-| `session_id` | `"uuid..."` | Unique session ID (generated per app launch) |
-| `user_id` | `"user_123"` or `"$anon_xxx"` | User ID (set via `identify()`) or anonymous ID |
-| `device_manufacturer` | `"Apple"` | Device manufacturer |
-| `locale` | `"en_US"` | User's locale from device settings |
-| `timezone` | `"America/New_York"` | User's timezone from device settings |
-| `$device_type` | `"phone"` | Device type (phone, tablet, desktop, tv, watch, vision, carplay) |
-| `$device_model` | `"iPhone15,2"` | Device model hardware identifier |
-| `$sdk` | `"swift"` | SDK identifier ("swift" or wrapper name if applicable) |
+### Identity & Session
+
+| Field | Description | Example | Persistence |
+|-------|-------------|---------|-------------|
+| `user_id` | Identified user ID (set via `identify()`) or anonymous ID | `user_123` or `$anon_abc123def456` | Persisted in UserDefaults (survives app restarts) |
+| `session_id` | UUID generated per app launch | `a1b2c3d4-e5f6-7890-abcd-ef1234567890` | Regenerated on each app launch |
+
+### Device & Platform
+
+| Field | Description | Example | Source |
+|-------|-------------|---------|--------|
+| `platform` | Platform identifier | `ios`, `macos`, `tvos`, `watchos`, `visionos` | System platform detection |
+| `os_version` | Operating system version | `17.1`, `14.3` | `ProcessInfo.operatingSystemVersion` |
+| `device_manufacturer` | Device manufacturer | `Apple` | Always "Apple" for Apple platforms |
+| `locale` | User's locale from device settings | `en_US`, `fr_FR` | `Locale.current.identifier` |
+| `timezone` | User's timezone from device settings | `America/New_York`, `Europe/Paris` | `TimeZone.current.identifier` |
+| `$device_type` | Device type category | `phone`, `tablet`, `desktop`, `tv`, `watch`, `vision`, `carplay` | Device idiom detection |
+| `$device_model` | Device model hardware identifier | `iPhone15,2`, `MacBookPro18,3` | System model identifier |
+
+### App & Environment
+
+| Field | Description | Example | Source |
+|-------|-------------|---------|--------|
+| `app_version` | App version | `1.0.0` | `CFBundleShortVersionString` from Info.plist |
+| `app_build_number` | App build number | `42` | `CFBundleVersion` from Info.plist |
+| `environment` | Environment name | `production`, `staging`, `development` | Configuration option (default: `production`) |
+
+### Event Metadata
+
+| Field | Description | Example | Purpose |
+|-------|-------------|---------|---------|
+| `client_event_id` | Unique UUID for each event | `550e8400-e29b-41d4-a716-446655440000` | Deduplication (prevents processing the same event twice) |
+| `timestamp` | ISO 8601 timestamp when event was tracked | `2024-01-15T10:30:00.000Z` | Event ordering and time-based analysis |
+| `$sdk` | SDK identifier | `swift` | Identifies events from this SDK |
 
 > **Note:** The `$` prefix indicates reserved system properties and events. Avoid using `$` prefix for your own custom properties.
+
+## Automatic Behavior
+
+The SDK automatically handles common tasks so you can focus on tracking what matters:
+
+**Event Management:**
+- **Event persistence** - Events are saved to disk and survive app restarts and crashes
+- **Batch processing** - Events are grouped into batches (default: 100 events per batch)
+- **Periodic flush** - Events are sent every 30 seconds (configurable via `flushInterval`)
+- **Automatic flush on batch size** - Events flush immediately when batch size is reached
+- **Background flush** - Events are automatically flushed when the app goes to background (resigns active)
+- **Retry on failure** - Failed requests are retried; events are preserved until successfully sent
+- **Payload compression** - Large batches (>1KB) are automatically gzip compressed
+- **Rate limiting** - Exponential backoff when rate limited by the server (respects `Retry-After` headers)
+- **Event validation** - Invalid events are dropped with debug logging
+- **Deduplication** - Events include unique IDs (`client_event_id`) to prevent duplicate processing
+
+**Lifecycle Tracking:**
+- **App lifecycle events** - Automatically tracks `$app_opened`, `$app_backgrounded`, `$app_installed`, and `$app_updated`
+- **Install/update detection** - Tracks first install and version changes by comparing stored version with current
+- **Session management** - New session ID generated on each app launch and persisted for the entire session
+
+**macOS Debouncing:**
+
+On macOS, window focus changes happen frequently (Cmd-Tab, clicking other windows). To prevent excessive events:
+- `$app_backgrounded` is **not tracked** on macOS
+- `$app_opened` is only tracked if the app was inactive for **at least 5 seconds**
+
+> **Note:** Events are still flushed on every focus change regardless of debouncing.
+
+**User & Identity:**
+- **User ID persistence** - User identity set via `identify()` persists across app launches in UserDefaults
+- **Anonymous ID** - Auto-generated anonymous ID (`$anon_xxxxxxxxxxxx`) for users before identification
+- **Anonymous ID persistence** - Anonymous IDs persist across app launches
+
+**Context Collection:**
+- **Automatic context** - Every event includes platform, OS version, device info, locale, timezone, etc.
+- **Dynamic context** - Context like app version and build number are collected at event time
 
 ## Event Naming
 
@@ -294,6 +331,21 @@ MostlyGoodMetrics.track("checkout", properties: [
 - Nesting depth: max 3 levels
 - Total properties size: max 10KB
 
+## Manual Flush
+
+Events are automatically flushed periodically and when the app backgrounds. You can also trigger a manual flush:
+
+```swift
+MostlyGoodMetrics.shared?.flush { result in
+    switch result {
+    case .success:
+        print("Events flushed successfully")
+    case .failure(let error):
+        print("Flush failed: \(error.localizedDescription)")
+    }
+}
+```
+
 ## Debug Logging
 
 Enable debug logging to see SDK activity:
@@ -314,65 +366,28 @@ Output example:
 [MostlyGoodMetrics] Successfully flushed 4 events
 ```
 
-## Automatic Behavior
+## Thread Safety
 
-The SDK automatically handles the following without any additional configuration:
-
-**Event Management:**
-- **Event persistence** - Events are saved to disk and survive app restarts and crashes
-- **Batch processing** - Events are grouped into batches (default: 100 events per batch)
-- **Periodic flush** - Events are sent every 30 seconds (configurable via `flushInterval`)
-- **Automatic flush on batch size** - Events flush immediately when batch size is reached
-- **Retry on failure** - Failed requests are retried; events are preserved until successfully sent
-- **Payload compression** - Large batches (>1KB) are automatically gzip compressed
-- **Rate limiting** - Exponential backoff when rate limited by the server (respects `Retry-After` headers)
-- **Deduplication** - Events include unique IDs (`client_event_id`) to prevent duplicate processing
-- **Event validation** - Invalid events are dropped with debug logging
-
-**Lifecycle Tracking:**
-- **App lifecycle events** - Automatically tracks `$app_opened`, `$app_backgrounded`, `$app_installed`, and `$app_updated`
-- **Background flush** - Events are automatically flushed when the app goes to background (resigns active)
-- **Session management** - New session ID generated on each app launch and persisted for the entire session
-- **Install/update detection** - Tracks first install and version changes by comparing stored version with current
-
-**macOS Debouncing:**
-
-On macOS, window focus changes happen frequently (Cmd-Tab, clicking other windows). To prevent excessive events:
-- `$app_backgrounded` is **not tracked** on macOS
-- `$app_opened` is only tracked if the app was inactive for **at least 5 seconds**
-
-> **Note:** Events are still flushed on every focus change regardless of debouncing.
-
-**User & Identity:**
-- **User ID persistence** - User identity set via `identify()` persists across app launches in UserDefaults
-- **Anonymous ID** - Auto-generated anonymous ID (`$anon_xxxxxxxxxxxx`) for users before identification
-- **Profile debouncing** - `$identify` events with profile data are only sent if changed or >24h since last send
-
-**Context Collection:**
-- **Automatic context** - Every event includes platform, OS version, device info, locale, timezone, etc.
-- **Dynamic context** - Context like app version and build number are collected at event time
-
-**Thread Safety:**
-
-The SDK is fully thread-safe. All methods can be called from any thread:
-- Event tracking uses internal queues for safe concurrent access
-- Flush operations are serialized to prevent race conditions
-- Storage operations are atomic
-
-## Manual Flush
-
-Events are automatically flushed periodically and when the app backgrounds. You can also trigger a manual flush:
+The SDK is fully thread-safe. All public methods can be called from any thread:
 
 ```swift
-MostlyGoodMetrics.shared?.flush { result in
-    switch result {
-    case .success:
-        print("Events flushed successfully")
-    case .failure(let error):
-        print("Flush failed: \(error.localizedDescription)")
-    }
+// Safe to call from any thread
+DispatchQueue.global(qos: .background).async {
+    MostlyGoodMetrics.track("background_event")
+}
+
+DispatchQueue.main.async {
+    MostlyGoodMetrics.identify(userId: "user_123")
 }
 ```
+
+**Thread Safety Implementation:**
+- Event tracking uses internal serial queues for safe concurrent access
+- Flush operations are serialized to prevent race conditions
+- Storage operations are atomic and use thread-safe mechanisms
+- All configuration and state management is protected with proper synchronization
+
+> **Note:** While the SDK is thread-safe, it's recommended to call `configure()` once at app launch on the main thread before making other SDK calls.
 
 ## License
 
