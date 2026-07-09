@@ -37,7 +37,23 @@ jobs:
         run: swift build
 
       - name: Run Tests
-        run: swift test
+        run: swift test --enable-code-coverage
+
+      - name: Export LCOV
+        run: |
+          BIN=$(swift build --show-bin-path)
+          XCTEST=$(find "$BIN" -name '*.xctest' | head -1)
+          xcrun llvm-cov export -format=lcov \
+            "$XCTEST/Contents/MacOS/$(basename "$XCTEST" .xctest)" \
+            -instr-profile "$BIN/codecov/default.profdata" > coverage.lcov
+
+      - name: Upload coverage to Covallaby
+        if: github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          curl -sf -X POST "https://app.covallaby.com/api/v1/upload?repo=${{ github.repository }}&branch=${{ github.ref_name }}&commit=${{ github.sha }}" \
+            -H "Authorization: Bearer ${{ secrets.COVALLABY_TOKEN }}" \
+            --data-binary @coverage.lcov
 
   build-platforms:
     name: Build for ${{ matrix.platform }}
