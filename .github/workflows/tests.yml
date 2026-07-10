@@ -48,10 +48,12 @@ jobs:
             -instr-profile "$BIN/codecov/default.profdata" > coverage.lcov
 
       - name: Upload coverage to Covallaby
-        if: github.event_name == 'push'
+        if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
-          curl -sf -X POST "https://app.covallaby.com/api/v1/upload?repo=${{ github.repository }}&branch=${{ github.ref_name }}&commit=${{ github.sha }}" \
+          URL="https://app.covallaby.com/api/v1/upload?repo=${{ github.repository }}&branch=${{ github.head_ref || github.ref_name }}&commit=${{ github.event.pull_request.head.sha || github.sha }}"
+          [ -n "${{ github.event.pull_request.number }}" ] && URL="${URL}&pr=${{ github.event.pull_request.number }}"
+          curl -sf -X POST "$URL" \
             -H "Authorization: Bearer ${{ secrets.COVALLABY_TOKEN }}" \
             --data-binary @coverage.lcov
 
