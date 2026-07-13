@@ -2393,8 +2393,8 @@ final class ABTestingTests: XCTestCase {
 
         let exposures = exposureEvents(in: storage)
         XCTAssertEqual(exposures.count, 1, "Exactly one $experiment_exposure event should be tracked")
-        XCTAssertEqual(exposures.first?.properties?["experiment"]?.value as? String, "button_color")
-        XCTAssertEqual(exposures.first?.properties?["variant"]?.value as? String, "red")
+        XCTAssertEqual(exposures.first?.properties?["$experiment_name"]?.value as? String, "button_color")
+        XCTAssertEqual(exposures.first?.properties?["$variant"]?.value as? String, "red")
     }
 
     func testExposureTrackedOnlyOncePerVariant() {
@@ -2481,7 +2481,7 @@ final class ABTestingTests: XCTestCase {
 
         let exposures = exposureEvents(in: storage)
         XCTAssertEqual(exposures.count, 2, "A new (user, experiment, variant) combination should fire a new exposure")
-        XCTAssertEqual(exposures.last?.properties?["variant"]?.value as? String, "blue")
+        XCTAssertEqual(exposures.last?.properties?["$variant"]?.value as? String, "blue")
     }
 
     // MARK: - Cache Tests (no expiry, stale-while-revalidate)

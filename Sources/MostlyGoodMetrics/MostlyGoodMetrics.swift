@@ -441,8 +441,8 @@ public final class MostlyGoodMetrics {
         guard !alreadyTracked else { return }
 
         track("$experiment_exposure", properties: [
-            "experiment": experimentName,
-            "variant": variant
+            "$experiment_name": experimentName,
+            "$variant": variant
         ])
         debugLog("Tracked $experiment_exposure for '\(experimentName)' variant '\(variant)'")
     }
