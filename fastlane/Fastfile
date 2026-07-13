@@ -1,3 +1,6 @@
+# Set the SDK path before importing - the imported Fastfile will use this
+$MGM_SDK_PATH = File.expand_path("..", __dir__)
+
 import_from_git(
   url: "https://github.com/Mostly-Good-Metrics/tools.git",
   path: "fastlane/Fastfile"
