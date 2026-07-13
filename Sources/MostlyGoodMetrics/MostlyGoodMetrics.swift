@@ -39,9 +39,10 @@ public final class MostlyGoodMetrics {
     private static let experimentsCacheKey = "MGM_experimentsCache"
     private static let experimentsFetchedAtKey = "MGM_experimentsFetchedAt"
     private static let experimentsCachedUserIdKey = "MGM_experimentsCachedUserId"
+    private static let experimentExposuresKey = "MGM_experimentExposures"
 
-    /// Time-to-live for experiments cache (24 hours)
-    private static let experimentsCacheTTL: TimeInterval = 24 * 60 * 60
+    /// Minimum time between background experiment refreshes (stale-while-revalidate throttle)
+    private static let experimentsRefreshInterval: TimeInterval = 60 * 60
 
     /// Assigned experiment variants (keyed by experiment name)
     private var assignedVariants: [String: String] = [:]
@@ -49,11 +50,33 @@ public final class MostlyGoodMetrics {
     /// Whether experiments have been loaded
     private var experimentsLoaded: Bool = false
 
-    /// Continuations waiting for experiments to load
-    private var experimentsContinuations: [CheckedContinuation<Void, Never>] = []
+    /// Waiters (from `ready()`) to resolve when experiments finish loading
+    private var experimentsWaiters: [ExperimentsWaiter] = []
+
+    /// Generation counter so a stale in-flight fetch can't overwrite a newer one
+    private var experimentsFetchGeneration: Int = 0
 
     /// Lock for thread-safe access to experiments state
     private let experimentsLock = NSLock()
+
+    /// Resumes a continuation exactly once, no matter how many paths race to resume it
+    /// (fetch success, fetch failure, or timeout).
+    private final class ExperimentsWaiter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var resumeHandler: (() -> Void)?
+
+        init(_ resumeHandler: @escaping () -> Void) {
+            self.resumeHandler = resumeHandler
+        }
+
+        func resume() {
+            lock.lock()
+            let handler = resumeHandler
+            resumeHandler = nil
+            lock.unlock()
+            handler?()
+        }
+    }
 
     /// Current user ID (persisted across sessions)
     public var userId: String? {
@@ -157,7 +180,10 @@ public final class MostlyGoodMetrics {
         experimentsLoaded = true
     }
 
-    /// Internal initializer for testing A/B testing functionality
+    /// Internal initializer for testing A/B testing functionality.
+    /// - Parameter skipExperimentsLoad: When true, experiments are neither loaded nor
+    ///   marked as loaded (to test pre-load behavior, `ready()` timeouts, etc).
+    ///   When false, the real load flow runs against the injected network client.
     internal init(
         configuration: MGMConfiguration,
         storage: EventStorage,
@@ -168,13 +194,13 @@ public final class MostlyGoodMetrics {
         self.storage = storage
         self.networkClient = networkClient
 
-        self.userId = nil
+        self.userId = UserDefaults.standard.string(forKey: "MGM_userId")
         self.anonymousId = Self.initializeAnonymousId()
         self.sessionId = UUID().uuidString
 
-        // Don't auto-load experiments if we want to test the loading flow
+        // Don't auto-load experiments if we want to test the loading flow manually
         if !skipExperimentsLoad {
-            experimentsLoaded = true
+            loadExperiments()
         }
     }
 
@@ -241,8 +267,9 @@ public final class MostlyGoodMetrics {
     /// Profile data (email, name) is sent to the backend via the $identify event.
     /// Debouncing: only sends $identify if payload changed or >24h since last send.
     ///
-    /// When the user ID changes, the experiments cache is invalidated and experiments
-    /// are refetched from the server.
+    /// When the user ID changes, experiments are refetched from the server. The current
+    /// in-memory variants keep being served until the new response arrives, at which point
+    /// they are atomically swapped.
     ///
     /// - Parameters:
     ///   - userId: The user identifier
@@ -324,110 +351,189 @@ public final class MostlyGoodMetrics {
 
     /// Waits for experiments to be loaded.
     /// Call this before accessing `getVariant` if you need to ensure experiments are available.
-    /// - Returns: Void when experiments are loaded
+    ///
+    /// This is guaranteed to resolve: it returns when experiments finish loading (success
+    /// or failure), or when the timeout elapses, whichever comes first.
+    ///
+    /// - Parameter timeout: Maximum time to wait, in seconds (default 3)
     @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
-    public func ready() async {
+    public func ready(timeout: TimeInterval = 3.0) async {
         // Check if already loaded (synchronous check)
         let isLoaded = experimentsLock.withLock { experimentsLoaded }
         if isLoaded {
             return
         }
 
-        await withCheckedContinuation { continuation in
-            experimentsLock.withLock {
-                if experimentsLoaded {
-                    continuation.resume()
-                } else {
-                    experimentsContinuations.append(continuation)
-                }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let waiter = ExperimentsWaiter { continuation.resume() }
+
+            var loadedWhileRegistering = false
+            experimentsLock.lock()
+            if experimentsLoaded {
+                loadedWhileRegistering = true
+            } else {
+                experimentsWaiters.append(waiter)
+            }
+            experimentsLock.unlock()
+
+            if loadedWhileRegistering {
+                waiter.resume()
+                return
+            }
+
+            // Guarantee resolution even if the fetch never completes.
+            // ExperimentsWaiter makes double-resume a no-op, so racing with
+            // fetch completion is safe.
+            DispatchQueue.global().asyncAfter(deadline: .now() + max(0, timeout)) {
+                waiter.resume()
             }
         }
     }
 
     /// Gets the variant assigned to a specific experiment.
     /// When a variant is accessed, it's automatically registered as a super property
-    /// with the key `$experiment_{snake_case_name}`.
+    /// with the key `$experiment_{snake_case_name}`, and a `$experiment_exposure` event
+    /// is tracked once per (user, experiment, variant).
     ///
-    /// - Parameter experimentName: The name of the experiment
-    /// - Returns: The assigned variant, or nil if the experiment doesn't exist or experiments haven't loaded
-    public func getVariant(_ experimentName: String) -> String? {
+    /// - Parameters:
+    ///   - experimentName: The name of the experiment
+    ///   - fallback: Value to return when the experiment is unknown or experiments
+    ///     haven't loaded yet
+    /// - Returns: The assigned variant, or `fallback` if the experiment doesn't exist
+    ///   or experiments haven't loaded
+    public func getVariant(_ experimentName: String, fallback: String? = nil) -> String? {
         experimentsLock.lock()
         let variant = assignedVariants[experimentName]
         experimentsLock.unlock()
 
-        if let variant = variant {
-            // Set as super property with $experiment_ prefix
-            let snakeCaseName = experimentName.toSnakeCase()
-            setSuperProperty("$experiment_\(snakeCaseName)", value: variant)
-            debugLog("Variant '\(variant)' for experiment '\(experimentName)' set as super property")
+        guard let variant = variant else {
+            return fallback
         }
+
+        // Set as super property with $experiment_ prefix
+        let snakeCaseName = experimentName.toSnakeCase()
+        setSuperProperty("$experiment_\(snakeCaseName)", value: variant)
+        debugLog("Variant '\(variant)' for experiment '\(experimentName)' set as super property")
+
+        trackExposureIfNeeded(experimentName: experimentName, variant: variant)
 
         return variant
     }
 
-    /// Loads experiments from cache or fetches from server
+    /// Tracks a `$experiment_exposure` event on the first `getVariant` hit for a given
+    /// (user, experiment, variant) combination. Dedup state is persisted in UserDefaults
+    /// so relaunches don't re-fire exposures.
+    private func trackExposureIfNeeded(experimentName: String, variant: String) {
+        let exposureKey = "\(effectiveUserId)|\(experimentName)|\(variant)"
+        let defaults = UserDefaults.standard
+
+        var alreadyTracked = false
+        experimentsLock.lock()
+        var exposures = defaults.stringArray(forKey: Self.experimentExposuresKey) ?? []
+        if exposures.contains(exposureKey) {
+            alreadyTracked = true
+        } else {
+            exposures.append(exposureKey)
+            defaults.set(exposures, forKey: Self.experimentExposuresKey)
+        }
+        experimentsLock.unlock()
+
+        guard !alreadyTracked else { return }
+
+        track("$experiment_exposure", properties: [
+            "experiment": experimentName,
+            "variant": variant
+        ])
+        debugLog("Tracked $experiment_exposure for '\(experimentName)' variant '\(variant)'")
+    }
+
+    /// Loads experiments from cache and/or fetches from server.
+    ///
+    /// Cached assignments never expire (stale-while-revalidate): the cache for the current
+    /// user is served immediately, and a background refetch runs if the last successful
+    /// fetch was more than `experimentsRefreshInterval` ago.
     private func loadExperiments() {
-        // Check if we have valid cached experiments
         if let cachedVariants = loadCachedExperiments() {
             experimentsLock.lock()
             assignedVariants = cachedVariants
             experimentsLoaded = true
-            let continuations = experimentsContinuations
-            experimentsContinuations.removeAll()
+            let waiters = experimentsWaiters
+            experimentsWaiters.removeAll()
             experimentsLock.unlock()
 
             debugLog("Loaded \(cachedVariants.count) experiments from cache")
-            continuations.forEach { $0.resume() }
+            waiters.forEach { $0.resume() }
+
+            // Background revalidation, throttled to once per refresh interval
+            let lastFetchedAt = UserDefaults.standard.object(forKey: Self.experimentsFetchedAtKey) as? Date
+            if lastFetchedAt == nil || Date().timeIntervalSince(lastFetchedAt!) >= Self.experimentsRefreshInterval {
+                fetchExperimentsFromServer()
+            }
             return
         }
 
-        // Fetch from server
+        // No cache for this user - fetch from server
         fetchExperimentsFromServer()
     }
 
-    /// Fetches experiments from the server
+    /// Fetches experiments from the server.
+    ///
+    /// On success, the in-memory assignments are atomically swapped (unless a newer fetch
+    /// has been started since). On failure, current assignments keep being served.
+    /// All `ready()` waiters are resolved in both cases.
     private func fetchExperimentsFromServer() {
-        networkClient.fetchExperiments(userId: effectiveUserId) { [weak self] result in
+        experimentsLock.lock()
+        experimentsFetchGeneration += 1
+        let generation = experimentsFetchGeneration
+        experimentsLock.unlock()
+
+        let requestedUserId = effectiveUserId
+        networkClient.fetchExperiments(userId: requestedUserId, anonymousId: anonymousId) { [weak self] result in
             guard let self = self else { return }
 
             switch result {
             case .success(let variants):
                 self.experimentsLock.lock()
-                self.assignedVariants = variants
+                let isLatestFetch = generation == self.experimentsFetchGeneration
+                if isLatestFetch {
+                    self.assignedVariants = variants
+                }
                 self.experimentsLoaded = true
-                let continuations = self.experimentsContinuations
-                self.experimentsContinuations.removeAll()
+                let waiters = self.experimentsWaiters
+                self.experimentsWaiters.removeAll()
                 self.experimentsLock.unlock()
 
-                // Cache the results
-                self.cacheExperiments(variants, userId: self.effectiveUserId)
-
-                self.debugLog("Fetched \(variants.count) experiment assignments")
-                continuations.forEach { $0.resume() }
+                if isLatestFetch {
+                    self.cacheExperiments(variants, userId: requestedUserId)
+                    self.debugLog("Fetched \(variants.count) experiment assignments")
+                } else {
+                    self.debugLog("Ignored stale experiments response for user \(requestedUserId)")
+                }
+                waiters.forEach { $0.resume() }
 
             case .failure(let error):
-                // Mark experiments as loaded even on failure to avoid blocking forever
+                // Mark experiments as loaded even on failure to avoid blocking forever.
+                // Keep serving whatever assignments we already have (cache or previous fetch).
                 self.experimentsLock.lock()
                 self.experimentsLoaded = true
-                let continuations = self.experimentsContinuations
-                self.experimentsContinuations.removeAll()
+                let waiters = self.experimentsWaiters
+                self.experimentsWaiters.removeAll()
                 self.experimentsLock.unlock()
 
                 self.debugLog("Failed to fetch experiments: \(error.localizedDescription)")
-                continuations.forEach { $0.resume() }
+                waiters.forEach { $0.resume() }
             }
         }
     }
 
-    /// Loads cached experiments if they exist and are valid
-    /// - Returns: Cached variants if valid, nil otherwise
+    /// Loads cached experiments for the current user, if present.
+    /// The cache never expires; freshness is handled by background revalidation.
+    /// - Returns: Cached variants if present for the current user, nil otherwise
     private func loadCachedExperiments() -> [String: String]? {
         let defaults = UserDefaults.standard
 
         guard let cachedUserId = defaults.string(forKey: Self.experimentsCachedUserIdKey),
               cachedUserId == effectiveUserId,
-              let fetchedAt = defaults.object(forKey: Self.experimentsFetchedAtKey) as? Date,
-              Date().timeIntervalSince(fetchedAt) < Self.experimentsCacheTTL,
               let data = defaults.data(forKey: Self.experimentsCacheKey),
               let variants = try? JSONDecoder().decode([String: String].self, from: data) else {
             return nil
@@ -451,23 +557,10 @@ public final class MostlyGoodMetrics {
         }
     }
 
-    /// Clears the experiments cache
-    private func clearExperimentsCache() {
-        let defaults = UserDefaults.standard
-        defaults.removeObject(forKey: Self.experimentsCacheKey)
-        defaults.removeObject(forKey: Self.experimentsFetchedAtKey)
-        defaults.removeObject(forKey: Self.experimentsCachedUserIdKey)
-        debugLog("Cleared experiments cache")
-    }
-
-    /// Refetches experiments from the server (used after identify)
+    /// Refetches experiments from the server (used after identify).
+    /// Current in-memory assignments keep being served until the new response
+    /// arrives, at which point they are atomically swapped.
     private func refetchExperiments() {
-        experimentsLock.lock()
-        assignedVariants.removeAll()
-        experimentsLoaded = false
-        experimentsLock.unlock()
-
-        clearExperimentsCache()
         fetchExperimentsFromServer()
     }
 
@@ -948,17 +1041,21 @@ public extension MostlyGoodMetrics {
     }
 
     /// Waits for experiments to be loaded using the shared instance.
-    /// - Returns: Void when experiments are loaded
+    /// Resolves on load completion (success or failure) or when the timeout elapses.
+    /// - Parameter timeout: Maximum time to wait, in seconds (default 3)
     @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
-    static func ready() async {
-        await shared?.ready()
+    static func ready(timeout: TimeInterval = 3.0) async {
+        await shared?.ready(timeout: timeout)
     }
 
     /// Gets the variant assigned to a specific experiment using the shared instance.
-    /// - Parameter experimentName: The name of the experiment
-    /// - Returns: The assigned variant, or nil if the experiment doesn't exist
-    static func getVariant(_ experimentName: String) -> String? {
-        shared?.getVariant(experimentName)
+    /// - Parameters:
+    ///   - experimentName: The name of the experiment
+    ///   - fallback: Value to return when the experiment is unknown or experiments
+    ///     haven't loaded yet
+    /// - Returns: The assigned variant, or `fallback` if the experiment doesn't exist
+    static func getVariant(_ experimentName: String, fallback: String? = nil) -> String? {
+        shared?.getVariant(experimentName, fallback: fallback) ?? fallback
     }
 }
 

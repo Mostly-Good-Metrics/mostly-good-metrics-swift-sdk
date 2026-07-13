@@ -9,7 +9,7 @@ import WatchKit
 #endif
 
 /// SDK version for User-Agent header
-internal let sdkVersion = "0.6.1"
+internal let sdkVersion = "0.7.0"
 
 /// Response from the experiments API
 struct ExperimentsResponse: Codable {
@@ -30,6 +30,7 @@ protocol NetworkClientProtocol {
 
     func fetchExperiments(
         userId: String,
+        anonymousId: String?,
         completion: @escaping (Result<[String: String], MGMError>) -> Void
     )
 }
@@ -183,9 +184,11 @@ final class NetworkClient: NetworkClientProtocol {
     /// Fetches experiment assignments for a user
     /// - Parameters:
     ///   - userId: The user identifier
+    ///   - anonymousId: The anonymous identifier, sent alongside the user ID
     ///   - completion: Completion handler with result containing assigned variants
     func fetchExperiments(
         userId: String,
+        anonymousId: String?,
         completion: @escaping (Result<[String: String], MGMError>) -> Void
     ) {
         guard var urlComponents = URLComponents(url: configuration.baseURL.appendingPathComponent("v1/experiments"), resolvingAgainstBaseURL: true) else {
@@ -193,7 +196,11 @@ final class NetworkClient: NetworkClientProtocol {
             return
         }
 
-        urlComponents.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        var queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        if let anonymousId = anonymousId {
+            queryItems.append(URLQueryItem(name: "anonymous_id", value: anonymousId))
+        }
+        urlComponents.queryItems = queryItems
 
         guard let url = urlComponents.url else {
             completion(.failure(.invalidResponse))
@@ -202,7 +209,7 @@ final class NetworkClient: NetworkClientProtocol {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.setValue(configuration.apiKey, forHTTPHeaderField: "X-MGM-Key")
+        request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue(buildUserAgent(), forHTTPHeaderField: "User-Agent")
 
         if configuration.enableDebugLogging {
