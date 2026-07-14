@@ -4,9 +4,6 @@ import UIKit
 #elseif canImport(AppKit)
 import AppKit
 #endif
-#if canImport(WatchKit)
-import WatchKit
-#endif
 
 /// The main client for tracking analytics events with MostlyGoodMetrics
 public final class MostlyGoodMetrics {
@@ -20,12 +17,14 @@ public final class MostlyGoodMetrics {
     private var flushTimer: Timer?
     private let flushQueue = DispatchQueue(label: "com.mostlygoodmetrics.flush")
 
-    /// Tracks when the app was last backgrounded (for debouncing on macOS)
+    /// Tracks when the app was last backgrounded (for debouncing on Mac,
+    /// i.e. native macOS and Mac Catalyst)
     private var lastBackgroundedTime: Date?
 
-    /// Minimum seconds app must be backgrounded before tracking $app_opened on macOS.
-    /// This prevents excessive events from quick window/app switches.
-    private let macOSBackgroundThreshold: TimeInterval = 5.0
+    /// Minimum seconds app must be backgrounded before tracking $app_opened on a Mac
+    /// (native macOS or Mac Catalyst). This prevents excessive events from quick
+    /// window/app switches.
+    private let macBackgroundThreshold: TimeInterval = 5.0
 
     // Keys for tracking install/update state
     private static let installedVersionKey = "MGM_installedVersion"
@@ -761,14 +760,12 @@ public final class MostlyGoodMetrics {
         debugLog("App will resign active - flushing events")
         lastBackgroundedTime = Date()
 
-        #if os(macOS)
-        // On macOS, we don't track $app_backgrounded because window focus changes
-        // happen frequently (Cmd-Tab, clicking other windows). We still flush events.
-        #else
-        if configuration.trackAppLifecycleEvents {
+        // On a Mac (native macOS or Mac Catalyst), we don't track $app_backgrounded
+        // because window focus changes happen frequently (Cmd-Tab, clicking other
+        // windows). We still flush events.
+        if Self.shouldTrackAppBackgrounded(), configuration.trackAppLifecycleEvents {
             track("$app_backgrounded")
         }
-        #endif
 
         flush()
     }
@@ -776,23 +773,41 @@ public final class MostlyGoodMetrics {
     @objc private func appDidBecomeActive() {
         debugLog("App did become active")
 
-        #if os(macOS)
-        // On macOS, only track $app_opened if the app was backgrounded for at least
-        // macOSBackgroundThreshold seconds. This prevents excessive events from quick
-        // window/app switches that are common on desktop.
-        if let lastBg = lastBackgroundedTime,
-           Date().timeIntervalSince(lastBg) >= macOSBackgroundThreshold,
-           configuration.trackAppLifecycleEvents {
+        // On a Mac (native macOS or Mac Catalyst), only track $app_opened if the app
+        // was backgrounded for at least macBackgroundThreshold seconds. This prevents
+        // excessive events from quick window/app switches that are common on desktop.
+        if Self.shouldTrackAppOpened(
+            lastBackgroundedTime: lastBackgroundedTime,
+            threshold: macBackgroundThreshold
+        ), configuration.trackAppLifecycleEvents {
             track("$app_opened")
         }
-        #else
-        if configuration.trackAppLifecycleEvents {
-            track("$app_opened")
-        }
-        #endif
 
         lastBackgroundedTime = nil
         flush()
+    }
+
+    /// Whether $app_backgrounded should be tracked when the app resigns active.
+    /// On a Mac (native macOS or Mac Catalyst) it never is, because window focus
+    /// changes are too frequent to be meaningful.
+    internal static func shouldTrackAppBackgrounded(
+        isMacLike: Bool = MGMPlatformInfo.isMacLike
+    ) -> Bool {
+        !isMacLike
+    }
+
+    /// Whether $app_opened should be tracked when the app becomes active.
+    /// On a Mac (native macOS or Mac Catalyst), only after the app has been
+    /// inactive for at least `threshold` seconds.
+    internal static func shouldTrackAppOpened(
+        lastBackgroundedTime: Date?,
+        threshold: TimeInterval,
+        now: Date = Date(),
+        isMacLike: Bool = MGMPlatformInfo.isMacLike
+    ) -> Bool {
+        guard isMacLike else { return true }
+        guard let lastBackgrounded = lastBackgroundedTime else { return false }
+        return now.timeIntervalSince(lastBackgrounded) >= threshold
     }
 
     private func trackInstallOrUpdate() {
@@ -829,19 +844,7 @@ public final class MostlyGoodMetrics {
     }
 
     private var currentPlatform: String {
-        #if os(iOS)
-        return "ios"
-        #elseif os(macOS)
-        return "macos"
-        #elseif os(tvOS)
-        return "tvos"
-        #elseif os(watchOS)
-        return "watchos"
-        #elseif os(visionOS)
-        return "visionos"
-        #else
-        return "unknown"
-        #endif
+        MGMPlatformInfo.platformName
     }
 
     private var appVersion: String? {
@@ -865,79 +868,15 @@ public final class MostlyGoodMetrics {
     }
 
     private var osVersion: String {
-        #if os(watchOS)
-        return WKInterfaceDevice.current().systemVersion
-        #elseif canImport(UIKit)
-        return UIDevice.current.systemVersion
-        #elseif canImport(AppKit)
-        return ProcessInfo.processInfo.operatingSystemVersionString
-        #else
-        return ProcessInfo.processInfo.operatingSystemVersionString
-        #endif
+        MGMPlatformInfo.osVersion
     }
 
     private var deviceType: String {
-        #if os(iOS)
-        switch UIDevice.current.userInterfaceIdiom {
-        case .phone:
-            return "phone"
-        case .pad:
-            return "tablet"
-        case .tv:
-            return "tv"
-        case .carPlay:
-            return "carplay"
-        case .mac:
-            return "mac"
-        case .vision:
-            return "vision"
-        @unknown default:
-            return "unknown"
-        }
-        #elseif os(macOS)
-        return "desktop"
-        #elseif os(tvOS)
-        return "tv"
-        #elseif os(watchOS)
-        return "watch"
-        #elseif os(visionOS)
-        return "vision"
-        #else
-        return "unknown"
-        #endif
+        MGMPlatformInfo.deviceType
     }
 
     private var deviceModel: String? {
-        #if os(iOS) || os(tvOS)
-        var systemInfo = utsname()
-        uname(&systemInfo)
-        let machineMirror = Mirror(reflecting: systemInfo.machine)
-        let identifier = machineMirror.children.reduce("") { identifier, element in
-            guard let value = element.value as? Int8, value != 0 else { return identifier }
-            return identifier + String(UnicodeScalar(UInt8(value)))
-        }
-        return identifier
-        #elseif os(watchOS)
-        var systemInfo = utsname()
-        uname(&systemInfo)
-        let machineMirror = Mirror(reflecting: systemInfo.machine)
-        let identifier = machineMirror.children.reduce("") { identifier, element in
-            guard let value = element.value as? Int8, value != 0 else { return identifier }
-            return identifier + String(UnicodeScalar(UInt8(value)))
-        }
-        return identifier
-        #elseif os(macOS)
-        var systemInfo = utsname()
-        uname(&systemInfo)
-        let machineMirror = Mirror(reflecting: systemInfo.machine)
-        let identifier = machineMirror.children.reduce("") { identifier, element in
-            guard let value = element.value as? Int8, value != 0 else { return identifier }
-            return identifier + String(UnicodeScalar(UInt8(value)))
-        }
-        return identifier
-        #else
-        return nil
-        #endif
+        MGMPlatformInfo.deviceModel
     }
 
     private var systemProperties: [String: Any] {

@@ -2901,3 +2901,145 @@ final class SnakeCaseTests: XCTestCase {
         XCTAssertEqual("myExperiment2".toSnakeCase(), "my_experiment2")
     }
 }
+
+// MARK: - Platform Info Tests (Mac Catalyst support, MGM-26)
+
+final class PlatformInfoTests: XCTestCase {
+
+    // These tests run on whatever platform hosts `swift test` (typically native
+    // macOS). The Catalyst-specific branches can only be exercised in an actual
+    // Mac Catalyst target, but the mac-like derivation paths (hw.model, desktop
+    // device type, macos platform name) are shared with native macOS and are
+    // verified here.
+
+    func testPlatformNameIsKnownValue() {
+        let known = ["ios", "macos", "tvos", "watchos", "visionos"]
+        XCTAssertTrue(known.contains(MGMPlatformInfo.platformName),
+                      "platformName should never be 'unknown' on Apple platforms, got \(MGMPlatformInfo.platformName)")
+    }
+
+    func testPlatformDisplayNameMatchesPlatformName() {
+        XCTAssertEqual(MGMPlatformInfo.platformDisplayName.lowercased(),
+                       MGMPlatformInfo.platformName)
+    }
+
+    func testOSVersionIsNotEmpty() {
+        XCTAssertFalse(MGMPlatformInfo.osVersion.isEmpty)
+    }
+
+    func testDeviceModelIsNotEmpty() {
+        let model = MGMPlatformInfo.deviceModel
+        XCTAssertNotNil(model)
+        XCTAssertFalse(model!.isEmpty)
+    }
+
+    #if os(macOS) || targetEnvironment(macCatalyst)
+    func testIsMacLikeTrueOnMac() {
+        XCTAssertTrue(MGMPlatformInfo.isMacLike)
+    }
+
+    func testPlatformNameIsMacOSOnMac() {
+        XCTAssertEqual(MGMPlatformInfo.platformName, "macos")
+        XCTAssertEqual(MGMPlatformInfo.platformDisplayName, "macOS")
+    }
+
+    func testDeviceTypeIsDesktopOnMac() {
+        XCTAssertEqual(MGMPlatformInfo.deviceType, "desktop")
+    }
+
+    func testDeviceModelIsRealMacModelIdentifierNotArchitecture() {
+        // Before the fix, a Mac reported the uname machine architecture
+        // ("arm64"/"x86_64") instead of a model identifier like "Mac14,12".
+        let model = MGMPlatformInfo.deviceModel
+        XCTAssertNotNil(model)
+        XCTAssertNotEqual(model, "arm64")
+        XCTAssertNotEqual(model, "x86_64")
+        // Mac model identifiers look like "Mac14,12", "MacBookPro18,3",
+        // "VirtualMac2,1" (CI), etc.
+        let pattern = "^[A-Za-z]+[0-9]+,[0-9]+$"
+        XCTAssertNotNil(model!.range(of: pattern, options: .regularExpression),
+                        "Expected a Mac model identifier, got \(model!)")
+    }
+    #endif
+
+    #if os(iOS) && !targetEnvironment(macCatalyst)
+    func testIsMacLikeFalseOnIOS() {
+        XCTAssertFalse(MGMPlatformInfo.isMacLike)
+    }
+    #endif
+}
+
+// MARK: - Mac Lifecycle Debounce Policy Tests (Mac Catalyst support, MGM-26)
+
+final class MacLifecyclePolicyTests: XCTestCase {
+
+    private let threshold: TimeInterval = 5.0
+
+    // MARK: $app_backgrounded
+
+    func testAppBackgroundedNotTrackedOnMacLike() {
+        // Native macOS and Mac Catalyst: never track $app_backgrounded
+        // (window focus changes are too frequent).
+        XCTAssertFalse(MostlyGoodMetrics.shouldTrackAppBackgrounded(isMacLike: true))
+    }
+
+    func testAppBackgroundedTrackedOnNonMac() {
+        // iOS / tvOS / watchOS / visionOS keep the normal behavior.
+        XCTAssertTrue(MostlyGoodMetrics.shouldTrackAppBackgrounded(isMacLike: false))
+    }
+
+    // MARK: $app_opened
+
+    func testAppOpenedAlwaysTrackedOnNonMac() {
+        XCTAssertTrue(MostlyGoodMetrics.shouldTrackAppOpened(
+            lastBackgroundedTime: nil,
+            threshold: threshold,
+            isMacLike: false
+        ))
+        XCTAssertTrue(MostlyGoodMetrics.shouldTrackAppOpened(
+            lastBackgroundedTime: Date().addingTimeInterval(-1),
+            threshold: threshold,
+            isMacLike: false
+        ))
+    }
+
+    func testAppOpenedNotTrackedOnMacLikeWithoutPriorBackground() {
+        // First activation (no recorded background time): don't track on Mac.
+        XCTAssertFalse(MostlyGoodMetrics.shouldTrackAppOpened(
+            lastBackgroundedTime: nil,
+            threshold: threshold,
+            isMacLike: true
+        ))
+    }
+
+    func testAppOpenedNotTrackedOnMacLikeBelowThreshold() {
+        // Quick window/app switch (< 5s): suppressed on Mac.
+        let now = Date()
+        XCTAssertFalse(MostlyGoodMetrics.shouldTrackAppOpened(
+            lastBackgroundedTime: now.addingTimeInterval(-4.9),
+            threshold: threshold,
+            now: now,
+            isMacLike: true
+        ))
+    }
+
+    func testAppOpenedTrackedOnMacLikeAtThreshold() {
+        let now = Date()
+        XCTAssertTrue(MostlyGoodMetrics.shouldTrackAppOpened(
+            lastBackgroundedTime: now.addingTimeInterval(-5.0),
+            threshold: threshold,
+            now: now,
+            isMacLike: true
+        ))
+    }
+
+    func testAppOpenedTrackedOnMacLikeAboveThreshold() {
+        let now = Date()
+        XCTAssertTrue(MostlyGoodMetrics.shouldTrackAppOpened(
+            lastBackgroundedTime: now.addingTimeInterval(-60),
+            threshold: threshold,
+            now: now,
+            isMacLike: true
+        ))
+    }
+}
