@@ -200,7 +200,7 @@ When `trackAppLifecycleEvents` is enabled (default), the SDK automatically track
 
 ### macOS Lifecycle Event Behavior
 
-On macOS, window focus changes happen frequently (Cmd-Tab, clicking other windows, etc.), which would generate excessive lifecycle events. To address this, the SDK applies debouncing on macOS:
+On macOS (including Mac Catalyst apps), window focus changes happen frequently (Cmd-Tab, clicking other windows, etc.), which would generate excessive lifecycle events. To address this, the SDK applies debouncing on macOS:
 
 - **`$app_backgrounded`**: Not tracked on macOS (focus changes are too frequent)
 - **`$app_opened`**: Only tracked if the app was inactive for **at least 5 seconds**
@@ -224,7 +224,7 @@ Every event automatically includes contextual information to provide rich analyt
 
 | Field | Description | Example | Source |
 |-------|-------------|---------|--------|
-| `platform` | Platform identifier | `ios`, `macos`, `tvos`, `watchos`, `visionos` | System platform detection |
+| `platform` | Platform identifier | `ios`, `macos`, `tvos`, `watchos`, `visionos` | System platform detection (Mac Catalyst reports `macos`) |
 | `os_version` | Operating system version | `17.1`, `14.3` | `ProcessInfo.operatingSystemVersion` |
 | `device_manufacturer` | Device manufacturer | `Apple` | Always "Apple" for Apple platforms |
 | `locale` | User's locale from device settings | `en_US`, `fr_FR` | `Locale.current.identifier` |
@@ -273,7 +273,7 @@ The SDK automatically handles common tasks so you can focus on tracking what mat
 
 **macOS Debouncing:**
 
-On macOS, window focus changes happen frequently (Cmd-Tab, clicking other windows). To prevent excessive events:
+On macOS (including Mac Catalyst apps), window focus changes happen frequently (Cmd-Tab, clicking other windows). To prevent excessive events:
 - `$app_backgrounded` is **not tracked** on macOS
 - `$app_opened` is only tracked if the app was inactive for **at least 5 seconds**
 

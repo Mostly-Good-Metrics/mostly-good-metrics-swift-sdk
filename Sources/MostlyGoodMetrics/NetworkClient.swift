@@ -1,12 +1,4 @@
 import Foundation
-#if canImport(UIKit)
-import UIKit
-#elseif canImport(AppKit)
-import AppKit
-#endif
-#if canImport(WatchKit)
-import WatchKit
-#endif
 
 /// SDK version for User-Agent header
 internal let sdkVersion = "0.7.0"
@@ -307,31 +299,11 @@ final class NetworkClient: NetworkClientProtocol {
     }
 
     private var currentPlatform: String {
-        #if os(iOS)
-        return "iOS"
-        #elseif os(macOS)
-        return "macOS"
-        #elseif os(tvOS)
-        return "tvOS"
-        #elseif os(watchOS)
-        return "watchOS"
-        #elseif os(visionOS)
-        return "visionOS"
-        #else
-        return "unknown"
-        #endif
+        MGMPlatformInfo.platformDisplayName
     }
 
     private var currentOSVersion: String {
-        #if os(watchOS)
-        return WKInterfaceDevice.current().systemVersion
-        #elseif canImport(UIKit)
-        return UIDevice.current.systemVersion
-        #elseif canImport(AppKit)
-        return ProcessInfo.processInfo.operatingSystemVersionString
-        #else
-        return ProcessInfo.processInfo.operatingSystemVersionString
-        #endif
+        MGMPlatformInfo.osVersion
     }
 }
 
