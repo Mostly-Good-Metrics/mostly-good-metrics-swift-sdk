@@ -355,9 +355,9 @@ public final class MostlyGoodMetrics {
     /// This is guaranteed to resolve: it returns when experiments finish loading (success
     /// or failure), or when the timeout elapses, whichever comes first.
     ///
-    /// - Parameter timeout: Maximum time to wait, in seconds (default 3)
+    /// - Parameter timeout: Maximum time to wait, in seconds (default 5)
     @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
-    public func ready(timeout: TimeInterval = 3.0) async {
+    public func ready(timeout: TimeInterval = 5.0) async {
         // Check if already loaded (synchronous check)
         let isLoaded = experimentsLock.withLock { experimentsLoaded }
         if isLoaded {
@@ -1042,9 +1042,9 @@ public extension MostlyGoodMetrics {
 
     /// Waits for experiments to be loaded using the shared instance.
     /// Resolves on load completion (success or failure) or when the timeout elapses.
-    /// - Parameter timeout: Maximum time to wait, in seconds (default 3)
+    /// - Parameter timeout: Maximum time to wait, in seconds (default 5)
     @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
-    static func ready(timeout: TimeInterval = 3.0) async {
+    static func ready(timeout: TimeInterval = 5.0) async {
         await shared?.ready(timeout: timeout)
     }
 
@@ -1082,36 +1082,36 @@ public struct UserProfile {
 // MARK: - String Extensions
 
 extension String {
-    /// Converts a string to snake_case
+    /// Converts a string to snake_case.
+    ///
+    /// Byte-for-byte port of the shared JS reference implementation:
+    ///   name.replace(/([A-Z])/g, "_$1").replace(/[-\s]+/g, "_").toLowerCase().replace(/^_/, "")
+    ///
+    /// Note: double underscores are contractual and must NOT be collapsed.
     /// Examples:
     /// - "myExperiment" -> "my_experiment"
-    /// - "My Experiment" -> "my_experiment"
-    /// - "my-experiment" -> "my_experiment"
-    /// - "MyExperiment123" -> "my_experiment123"
+    /// - "Pricing-Test V2" -> "pricing__test__v2"
+    /// - "button-color" -> "button_color"
+    /// - "ABTest" -> "a_b_test"
     func toSnakeCase() -> String {
-        // First, replace spaces and hyphens with underscores
-        let normalized = self.replacingOccurrences(of: " ", with: "_")
-            .replacingOccurrences(of: "-", with: "_")
-
-        // Then handle camelCase by inserting underscores before uppercase letters
-        var snakeCase = ""
-        for (index, char) in normalized.enumerated() {
-            if char.isUppercase && index > 0 {
-                let previousIndex = normalized.index(normalized.startIndex, offsetBy: index - 1)
-                let previousChar = normalized[previousIndex]
-                // Only add underscore if previous char is lowercase (to handle consecutive uppercase)
-                if previousChar.isLowercase || previousChar.isNumber {
-                    snakeCase.append("_")
-                }
-            }
-            snakeCase.append(char.lowercased())
+        // Step 1: insert "_" before every uppercase letter (no conditions)
+        var result = self.replacingOccurrences(
+            of: "([A-Z])",
+            with: "_$1",
+            options: .regularExpression
+        )
+        // Step 2: replace runs of hyphens and whitespace with a single "_"
+        result = result.replacingOccurrences(
+            of: "[-\\s]+",
+            with: "_",
+            options: .regularExpression
+        )
+        // Step 3: lowercase everything
+        result = result.lowercased()
+        // Step 4: strip one leading "_" if present
+        if result.hasPrefix("_") {
+            result.removeFirst()
         }
-
-        // Clean up multiple consecutive underscores
-        while snakeCase.contains("__") {
-            snakeCase = snakeCase.replacingOccurrences(of: "__", with: "_")
-        }
-
-        return snakeCase
+        return result
     }
 }

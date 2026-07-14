@@ -2361,12 +2361,12 @@ final class ABTestingTests: XCTestCase {
 
     func testSuperPropertyUsesSnakeCaseExperimentName() {
         XCTAssertEqual("myExperiment".toSnakeCase(), "my_experiment")
-        XCTAssertEqual("My Experiment".toSnakeCase(), "my_experiment")
+        XCTAssertEqual("My Experiment".toSnakeCase(), "my__experiment")
         XCTAssertEqual("my-experiment".toSnakeCase(), "my_experiment")
         XCTAssertEqual("MyExperiment123".toSnakeCase(), "my_experiment123")
         XCTAssertEqual("already_snake_case".toSnakeCase(), "already_snake_case")
-        XCTAssertEqual("ABC".toSnakeCase(), "abc")
-        XCTAssertEqual("getHTTPResponse".toSnakeCase(), "get_httpresponse")
+        XCTAssertEqual("ABC".toSnakeCase(), "a_b_c")
+        XCTAssertEqual("getHTTPResponse".toSnakeCase(), "get_h_t_t_p_response")
     }
 
     // MARK: - Exposure Tracking Tests
@@ -2855,7 +2855,7 @@ final class SnakeCaseTests: XCTestCase {
     }
 
     func testWithSpaces() {
-        XCTAssertEqual("With Spaces".toSnakeCase(), "with_spaces")
+        XCTAssertEqual("With Spaces".toSnakeCase(), "with__spaces")
         XCTAssertEqual("multiple words here".toSnakeCase(), "multiple_words_here")
     }
 
@@ -2876,9 +2876,9 @@ final class SnakeCaseTests: XCTestCase {
     }
 
     func testUppercaseAcronyms() {
-        XCTAssertEqual("parseJSON".toSnakeCase(), "parse_json")
-        XCTAssertEqual("XMLParser".toSnakeCase(), "xmlparser")
-        XCTAssertEqual("getHTTPResponse".toSnakeCase(), "get_httpresponse")
+        XCTAssertEqual("parseJSON".toSnakeCase(), "parse_j_s_o_n")
+        XCTAssertEqual("XMLParser".toSnakeCase(), "x_m_l_parser")
+        XCTAssertEqual("getHTTPResponse".toSnakeCase(), "get_h_t_t_p_response")
     }
 
     func testEmptyAndSingleChar() {
@@ -2888,6 +2888,16 @@ final class SnakeCaseTests: XCTestCase {
     }
 
     func testMixedFormats() {
-        XCTAssertEqual("mixed-Case_and spaces".toSnakeCase(), "mixed_case_and_spaces")
+        XCTAssertEqual("mixed-Case_and spaces".toSnakeCase(), "mixed__case_and_spaces")
+    }
+
+    func testJSReferenceContractPinnedOutputs() {
+        // Pinned against the shared JS reference implementation:
+        // name.replace(/([A-Z])/g, "_$1").replace(/[-\s]+/g, "_").toLowerCase().replace(/^_/, "")
+        XCTAssertEqual("Pricing-Test V2".toSnakeCase(), "pricing__test__v2")
+        XCTAssertEqual("A-B-Test".toSnakeCase(), "a__b__test")
+        XCTAssertEqual("ABTest".toSnakeCase(), "a_b_test")
+        XCTAssertEqual("button-color".toSnakeCase(), "button_color")
+        XCTAssertEqual("myExperiment2".toSnakeCase(), "my_experiment2")
     }
 }
