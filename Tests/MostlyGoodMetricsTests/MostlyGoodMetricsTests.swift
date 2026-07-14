@@ -2099,6 +2099,10 @@ class MockNetworkClient: NetworkClientProtocol {
             completion(self.result)
         }
     }
+
+    func fetchExperiments(userId: String, anonymousId: String?, completion: @escaping (Result<[String: String], MGMError>) -> Void) {
+        completion(.success([:]))
+    }
 }
 
 /// Mock network client that returns results in sequence
@@ -2117,5 +2121,783 @@ class SequentialMockNetworkClient: NetworkClientProtocol {
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
             completion(result)
         }
+    }
+
+    func fetchExperiments(userId: String, anonymousId: String?, completion: @escaping (Result<[String: String], MGMError>) -> Void) {
+        completion(.success([:]))
+    }
+}
+
+// MARK: - A/B Testing Mock Network Client
+
+/// Mock network client for A/B testing functionality
+class ExperimentsMockNetworkClient: NetworkClientProtocol {
+    private let lock = NSLock()
+    private var _experimentsResult: Result<[String: String], MGMError>
+    private var _fetchExperimentsCallCount = 0
+    private var _lastFetchedUserId: String?
+    private var _lastFetchedAnonymousId: String?
+
+    var experimentsResult: Result<[String: String], MGMError> {
+        get { lock.lock(); defer { lock.unlock() }; return _experimentsResult }
+        set { lock.lock(); defer { lock.unlock() }; _experimentsResult = newValue }
+    }
+    var fetchExperimentsCallCount: Int {
+        lock.lock(); defer { lock.unlock() }; return _fetchExperimentsCallCount
+    }
+    var lastFetchedUserId: String? {
+        lock.lock(); defer { lock.unlock() }; return _lastFetchedUserId
+    }
+    var lastFetchedAnonymousId: String? {
+        lock.lock(); defer { lock.unlock() }; return _lastFetchedAnonymousId
+    }
+
+    init(experimentsResult: Result<[String: String], MGMError> = .success([:])) {
+        self._experimentsResult = experimentsResult
+    }
+
+    func sendEvents(_ events: [MGMEvent], context: MGMEventContext?, completion: @escaping (Result<Void, MGMError>) -> Void) {
+        completion(.success(()))
+    }
+
+    func fetchExperiments(userId: String, anonymousId: String?, completion: @escaping (Result<[String: String], MGMError>) -> Void) {
+        lock.lock()
+        _fetchExperimentsCallCount += 1
+        _lastFetchedUserId = userId
+        _lastFetchedAnonymousId = anonymousId
+        let result = _experimentsResult
+        lock.unlock()
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            completion(result)
+        }
+    }
+}
+
+/// Mock network client whose fetchExperiments completions are fired manually,
+/// so tests can control exactly when a fetch "responds".
+class ManualExperimentsMockNetworkClient: NetworkClientProtocol {
+    private let lock = NSLock()
+    private var pendingCompletions: [(Result<[String: String], MGMError>) -> Void] = []
+    private var _fetchExperimentsCallCount = 0
+
+    var fetchExperimentsCallCount: Int {
+        lock.lock(); defer { lock.unlock() }; return _fetchExperimentsCallCount
+    }
+
+    var pendingFetchCount: Int {
+        lock.lock(); defer { lock.unlock() }; return pendingCompletions.count
+    }
+
+    func sendEvents(_ events: [MGMEvent], context: MGMEventContext?, completion: @escaping (Result<Void, MGMError>) -> Void) {
+        completion(.success(()))
+    }
+
+    func fetchExperiments(userId: String, anonymousId: String?, completion: @escaping (Result<[String: String], MGMError>) -> Void) {
+        lock.lock()
+        _fetchExperimentsCallCount += 1
+        pendingCompletions.append(completion)
+        lock.unlock()
+    }
+
+    /// Fires the oldest pending fetch completion with the given result.
+    func completeNextFetch(with result: Result<[String: String], MGMError>) {
+        lock.lock()
+        let completion = pendingCompletions.isEmpty ? nil : pendingCompletions.removeFirst()
+        lock.unlock()
+        completion?(result)
+    }
+}
+
+// MARK: - A/B Testing Tests
+
+final class ABTestingTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        clearExperimentsDefaults()
+    }
+
+    override func tearDown() {
+        super.tearDown()
+        clearExperimentsDefaults()
+        MostlyGoodMetrics.shared?.clearSuperProperties()
+    }
+
+    private func clearExperimentsDefaults() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: "MGM_experimentsCache")
+        defaults.removeObject(forKey: "MGM_experimentsFetchedAt")
+        defaults.removeObject(forKey: "MGM_experimentsCachedUserId")
+        defaults.removeObject(forKey: "MGM_experimentExposures")
+        defaults.removeObject(forKey: "MGM_userId")
+        defaults.removeObject(forKey: "MGM_anonymousId")
+        defaults.removeObject(forKey: "MGM_superProperties")
+    }
+
+    private func makeConfig() -> MGMConfiguration {
+        MGMConfiguration(apiKey: "test_key", trackAppLifecycleEvents: false)
+    }
+
+    /// Blocks the test for the given duration (lets async mock completions land).
+    private func waitBriefly(_ seconds: TimeInterval = 0.3) {
+        let exp = expectation(description: "brief wait")
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { exp.fulfill() }
+        waitForExpectations(timeout: seconds + 2)
+    }
+
+    /// Seeds the experiments cache in UserDefaults for the given user.
+    private func seedCache(variants: [String: String], userId: String, fetchedAt: Date) {
+        let defaults = UserDefaults.standard
+        defaults.set(try? JSONEncoder().encode(variants), forKey: "MGM_experimentsCache")
+        defaults.set(fetchedAt, forKey: "MGM_experimentsFetchedAt")
+        defaults.set(userId, forKey: "MGM_experimentsCachedUserId")
+    }
+
+    // MARK: - getVariant Tests
+
+    func testGetVariantReturnsCorrectVariant() {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["button_color": "red", "checkout_flow": "v2"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        waitBriefly()
+
+        XCTAssertEqual(sdk.getVariant("button_color"), "red")
+        XCTAssertEqual(sdk.getVariant("checkout_flow"), "v2")
+        XCTAssertEqual(mockNetwork.fetchExperimentsCallCount, 1, "Should have fetched exactly once on init")
+    }
+
+    func testGetVariantReturnsNilForUnknownExperiment() {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["known_experiment": "control"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        waitBriefly()
+
+        XCTAssertEqual(sdk.getVariant("known_experiment"), "control")
+        XCTAssertNil(sdk.getVariant("unknown_experiment"), "getVariant should return nil for unknown experiment")
+    }
+
+    func testGetVariantReturnsFallbackForUnknownExperiment() {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["known_experiment": "control"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        waitBriefly()
+
+        XCTAssertEqual(
+            sdk.getVariant("unknown_experiment", fallback: "fallback_variant"),
+            "fallback_variant",
+            "getVariant should return the fallback for unknown experiments"
+        )
+        XCTAssertEqual(
+            sdk.getVariant("known_experiment", fallback: "fallback_variant"),
+            "control",
+            "Fallback must not override an assigned variant"
+        )
+    }
+
+    func testGetVariantReturnsFallbackBeforeExperimentsLoad() {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["test_experiment": "variant_a"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: true // experiments never loaded
+        )
+
+        XCTAssertNil(sdk.getVariant("test_experiment"), "Should return nil pre-load without fallback")
+        XCTAssertEqual(
+            sdk.getVariant("test_experiment", fallback: "control"),
+            "control",
+            "Should return fallback pre-load"
+        )
+    }
+
+    // MARK: - Super Property Tests
+
+    func testGetVariantSetsSuperPropertyWithExperimentPrefix() {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["buttonColor": "red"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        waitBriefly()
+
+        XCTAssertEqual(sdk.getVariant("buttonColor"), "red")
+        let superProps = sdk.getSuperProperties()
+        XCTAssertEqual(
+            superProps["$experiment_button_color"] as? String,
+            "red",
+            "getVariant should register a $experiment_{snake_case} super property"
+        )
+    }
+
+    func testSuperPropertyUsesSnakeCaseExperimentName() {
+        XCTAssertEqual("myExperiment".toSnakeCase(), "my_experiment")
+        XCTAssertEqual("My Experiment".toSnakeCase(), "my__experiment")
+        XCTAssertEqual("my-experiment".toSnakeCase(), "my_experiment")
+        XCTAssertEqual("MyExperiment123".toSnakeCase(), "my_experiment123")
+        XCTAssertEqual("already_snake_case".toSnakeCase(), "already_snake_case")
+        XCTAssertEqual("ABC".toSnakeCase(), "a_b_c")
+        XCTAssertEqual("getHTTPResponse".toSnakeCase(), "get_h_t_t_p_response")
+    }
+
+    // MARK: - Exposure Tracking Tests
+
+    private func exposureEvents(in storage: InMemoryEventStorage) -> [MGMEvent] {
+        storage.fetchEvents(limit: 1000).filter { $0.name == "$experiment_exposure" }
+    }
+
+    func testExposureTrackedOnFirstGetVariant() {
+        let storage = InMemoryEventStorage()
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["button_color": "red"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: storage,
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        waitBriefly()
+        XCTAssertEqual(sdk.getVariant("button_color"), "red")
+        waitBriefly(0.2)
+
+        let exposures = exposureEvents(in: storage)
+        XCTAssertEqual(exposures.count, 1, "Exactly one $experiment_exposure event should be tracked")
+        XCTAssertEqual(exposures.first?.properties?["$experiment_name"]?.value as? String, "button_color")
+        XCTAssertEqual(exposures.first?.properties?["$variant"]?.value as? String, "red")
+    }
+
+    func testExposureTrackedOnlyOncePerVariant() {
+        let storage = InMemoryEventStorage()
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["button_color": "red"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: storage,
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        waitBriefly()
+        _ = sdk.getVariant("button_color")
+        _ = sdk.getVariant("button_color")
+        _ = sdk.getVariant("button_color")
+        waitBriefly(0.2)
+
+        XCTAssertEqual(exposureEvents(in: storage).count, 1, "Repeated getVariant calls must not re-fire exposure")
+    }
+
+    func testExposureNotRefiredAcrossRelaunch() {
+        // First "launch": load, read variant, exposure fires
+        let storage1 = InMemoryEventStorage()
+        let mockNetwork1 = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["button_color": "red"])
+        )
+        let sdk1 = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: storage1,
+            networkClient: mockNetwork1,
+            skipExperimentsLoad: false
+        )
+
+        waitBriefly()
+        XCTAssertEqual(sdk1.getVariant("button_color"), "red")
+        waitBriefly(0.2)
+        XCTAssertEqual(exposureEvents(in: storage1).count, 1, "First launch should fire exposure")
+
+        // Simulated relaunch: fresh instance and storage, same UserDefaults suite
+        let storage2 = InMemoryEventStorage()
+        let mockNetwork2 = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["button_color": "red"])
+        )
+        let sdk2 = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: storage2,
+            networkClient: mockNetwork2,
+            skipExperimentsLoad: false
+        )
+
+        waitBriefly()
+        XCTAssertEqual(sdk2.getVariant("button_color"), "red")
+        waitBriefly(0.2)
+        XCTAssertEqual(
+            exposureEvents(in: storage2).count,
+            0,
+            "Exposure must not re-fire across relaunch for the same (user, experiment, variant)"
+        )
+    }
+
+    func testExposureFiresAgainForNewVariant() {
+        let storage = InMemoryEventStorage()
+        let mockNetwork = ManualExperimentsMockNetworkClient()
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: storage,
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        mockNetwork.completeNextFetch(with: .success(["button_color": "red"]))
+        waitBriefly(0.2)
+        XCTAssertEqual(sdk.getVariant("button_color"), "red")
+
+        // User changes -> refetch assigns a different variant
+        sdk.identify(userId: "different_user")
+        mockNetwork.completeNextFetch(with: .success(["button_color": "blue"]))
+        waitBriefly(0.2)
+        XCTAssertEqual(sdk.getVariant("button_color"), "blue")
+        waitBriefly(0.2)
+
+        let exposures = exposureEvents(in: storage)
+        XCTAssertEqual(exposures.count, 2, "A new (user, experiment, variant) combination should fire a new exposure")
+        XCTAssertEqual(exposures.last?.properties?["$variant"]?.value as? String, "blue")
+    }
+
+    // MARK: - Cache Tests (no expiry, stale-while-revalidate)
+
+    func testCacheIsRestoredOnInitAndServedImmediately() {
+        let anonId = "$anon_testcache123"
+        UserDefaults.standard.set(anonId, forKey: "MGM_anonymousId")
+        seedCache(variants: ["cached_experiment": "cached_variant"], userId: anonId, fetchedAt: Date())
+
+        let mockNetwork = ExperimentsMockNetworkClient(experimentsResult: .success([:]))
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        // Cache path is synchronous inside init: variant is available immediately
+        XCTAssertEqual(sdk.getVariant("cached_experiment"), "cached_variant")
+        XCTAssertEqual(
+            mockNetwork.fetchExperimentsCallCount,
+            0,
+            "A fresh cache (fetched < 1h ago) must not trigger a background refetch"
+        )
+    }
+
+    func testCacheNeverExpires() {
+        let anonId = "$anon_neverexpires"
+        UserDefaults.standard.set(anonId, forKey: "MGM_anonymousId")
+        // 30 days old - way past the old 24h TTL
+        let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
+        seedCache(variants: ["old_experiment": "old_variant"], userId: anonId, fetchedAt: thirtyDaysAgo)
+
+        // Network fails: only the cache can provide the variant
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .failure(.networkError(NSError(domain: "test", code: -1)))
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        XCTAssertEqual(
+            sdk.getVariant("old_experiment"),
+            "old_variant",
+            "Cached assignments must be served regardless of age (no TTL)"
+        )
+
+        waitBriefly()
+        XCTAssertEqual(
+            sdk.getVariant("old_experiment"),
+            "old_variant",
+            "A failed background refetch must not drop cached assignments"
+        )
+    }
+
+    func testStaleCacheTriggersBackgroundRefetchAndSwap() {
+        let anonId = "$anon_stalecache"
+        UserDefaults.standard.set(anonId, forKey: "MGM_anonymousId")
+        // 2 hours old - past the 1h refresh throttle
+        let twoHoursAgo = Date().addingTimeInterval(-2 * 60 * 60)
+        seedCache(variants: ["exp": "stale_variant"], userId: anonId, fetchedAt: twoHoursAgo)
+
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["exp": "fresh_variant"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        // Cache served immediately (stale-while-revalidate)
+        XCTAssertEqual(sdk.getVariant("exp"), "stale_variant")
+
+        waitBriefly()
+        XCTAssertEqual(mockNetwork.fetchExperimentsCallCount, 1, "Stale cache should trigger a background refetch")
+        XCTAssertEqual(sdk.getVariant("exp"), "fresh_variant", "Fetched assignments should atomically replace the cache")
+    }
+
+    func testFreshCacheDoesNotRefetchWithinThrottle() {
+        let anonId = "$anon_freshcache"
+        UserDefaults.standard.set(anonId, forKey: "MGM_anonymousId")
+        // 5 minutes old - within the 1h refresh throttle
+        seedCache(variants: ["exp": "v"], userId: anonId, fetchedAt: Date().addingTimeInterval(-5 * 60))
+
+        let mockNetwork = ExperimentsMockNetworkClient(experimentsResult: .success(["exp": "other"]))
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        waitBriefly()
+        XCTAssertEqual(mockNetwork.fetchExperimentsCallCount, 0, "Refetch must be throttled while cache is fresh")
+        XCTAssertEqual(sdk.getVariant("exp"), "v")
+    }
+
+    func testSuccessfulFetchWritesCache() {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["exp": "variant_a"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        waitBriefly()
+
+        let defaults = UserDefaults.standard
+        let data = defaults.data(forKey: "MGM_experimentsCache")
+        XCTAssertNotNil(data, "Fetch should persist assignments to UserDefaults")
+        let cached = data.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) }
+        XCTAssertEqual(cached?["exp"], "variant_a")
+        XCTAssertEqual(defaults.string(forKey: "MGM_experimentsCachedUserId"), sdk.anonymousId)
+        XCTAssertNotNil(defaults.object(forKey: "MGM_experimentsFetchedAt") as? Date)
+    }
+
+    // MARK: - identify() Behavior Tests
+
+    func testIdentifyKeepsOldVariantsUntilNewResponseArrives() {
+        let mockNetwork = ManualExperimentsMockNetworkClient()
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        // Initial load resolves with variant "a"
+        mockNetwork.completeNextFetch(with: .success(["exp": "a"]))
+        waitBriefly(0.2)
+        XCTAssertEqual(sdk.getVariant("exp"), "a")
+
+        // User changes: refetch starts but has NOT responded yet
+        sdk.identify(userId: "new_user")
+        XCTAssertEqual(
+            sdk.getVariant("exp"),
+            "a",
+            "Old variants must keep being served while the refetch is in flight"
+        )
+        XCTAssertEqual(mockNetwork.fetchExperimentsCallCount, 2, "identify with a new user should trigger a refetch")
+
+        // Response arrives: assignments atomically swap
+        mockNetwork.completeNextFetch(with: .success(["exp": "b"]))
+        waitBriefly(0.2)
+        XCTAssertEqual(sdk.getVariant("exp"), "b", "Assignments should swap once the new response arrives")
+    }
+
+    func testIdentifyFetchFailureKeepsOldVariants() {
+        let mockNetwork = ManualExperimentsMockNetworkClient()
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        mockNetwork.completeNextFetch(with: .success(["exp": "a"]))
+        waitBriefly(0.2)
+        XCTAssertEqual(sdk.getVariant("exp"), "a")
+
+        sdk.identify(userId: "new_user")
+        mockNetwork.completeNextFetch(with: .failure(.networkError(NSError(domain: "test", code: -1))))
+        waitBriefly(0.2)
+
+        XCTAssertEqual(
+            sdk.getVariant("exp"),
+            "a",
+            "A failed refetch after identify must not clear current assignments"
+        )
+    }
+
+    func testIdentifyRefetchesWhenUserChanges() {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["test": "variant"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: true
+        )
+
+        sdk.identify(userId: "user_1")
+        waitBriefly(0.2)
+        let firstCallCount = mockNetwork.fetchExperimentsCallCount
+        XCTAssertEqual(firstCallCount, 1, "identify with a new user should fetch experiments")
+
+        sdk.identify(userId: "user_2")
+        waitBriefly(0.2)
+        XCTAssertEqual(mockNetwork.fetchExperimentsCallCount, 2, "Should refetch experiments when user changes")
+        XCTAssertEqual(mockNetwork.lastFetchedUserId, "user_2")
+    }
+
+    func testIdentifyDoesNotRefetchForSameUser() {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["test": "variant"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: true
+        )
+
+        sdk.identify(userId: "same_user")
+        waitBriefly(0.2)
+        let callCountAfterFirst = mockNetwork.fetchExperimentsCallCount
+
+        sdk.identify(userId: "same_user")
+        waitBriefly(0.2)
+        XCTAssertEqual(
+            mockNetwork.fetchExperimentsCallCount,
+            callCountAfterFirst,
+            "Should NOT refetch experiments when the same user is identified again"
+        )
+    }
+
+    func testExperimentsFetchIncludesAnonymousId() {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["test": "variant"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        waitBriefly()
+        XCTAssertEqual(mockNetwork.lastFetchedUserId, sdk.anonymousId, "Anonymous users fetch with their anonymous ID")
+        XCTAssertEqual(mockNetwork.lastFetchedAnonymousId, sdk.anonymousId, "anonymous_id must be sent alongside user_id")
+
+        sdk.identify(userId: "specific_user_id")
+        waitBriefly(0.2)
+        XCTAssertEqual(mockNetwork.lastFetchedUserId, "specific_user_id")
+        XCTAssertEqual(mockNetwork.lastFetchedAnonymousId, sdk.anonymousId, "anonymous_id is still sent after identify")
+    }
+
+    // MARK: - ready() Tests
+
+    @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
+    func testReadyResolvesAfterExperimentsLoad() async {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["async_test": "variant"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        let start = Date()
+        await sdk.ready(timeout: 5.0)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertLessThan(elapsed, 4.0, "ready() should resolve on fetch completion, not wait for the timeout")
+        XCTAssertEqual(sdk.getVariant("async_test"), "variant", "Variants must be available after ready() resolves")
+    }
+
+    @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
+    func testReadyResolvesOnFetchFailure() async {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .failure(.networkError(NSError(domain: "test", code: -1)))
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        let start = Date()
+        await sdk.ready(timeout: 10.0)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertLessThan(elapsed, 5.0, "ready() must resolve promptly when the fetch fails - it must not hang")
+        XCTAssertEqual(sdk.getVariant("anything", fallback: "control"), "control")
+    }
+
+    @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
+    func testReadyResolvesOnTimeoutWhenFetchNeverCompletes() async {
+        // Manual mock that never fires its completion: the only way out is the timeout
+        let mockNetwork = ManualExperimentsMockNetworkClient()
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+        XCTAssertEqual(mockNetwork.pendingFetchCount, 1, "Fetch should be in flight and unresolved")
+
+        let start = Date()
+        await sdk.ready(timeout: 0.5)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertGreaterThanOrEqual(elapsed, 0.4, "ready() should wait for the timeout when the fetch never completes")
+        XCTAssertLessThan(elapsed, 3.0, "ready() must resolve at the timeout - it must never hang")
+
+        // Late completion after timeout must not crash (double-resume is a no-op)
+        mockNetwork.completeNextFetch(with: .success(["late": "variant"]))
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(sdk.getVariant("late"), "variant", "Late responses still populate assignments")
+    }
+
+    @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
+    func testReadyResolvesImmediatelyIfAlreadyLoaded() async {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentsResult: .success(["exp": "v"])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        let start = Date()
+        await sdk.ready(timeout: 5.0)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertLessThan(elapsed, 1.0, "ready() should return immediately when experiments are already loaded")
+        XCTAssertEqual(sdk.getVariant("exp"), "v")
+    }
+
+    // MARK: - Static Method Tests
+
+    func testStaticGetVariantWithFallback() {
+        let config = MGMConfiguration(apiKey: "test_key", trackAppLifecycleEvents: false)
+        MostlyGoodMetrics.configure(with: config)
+
+        // No experiments loaded from the real network in tests: fallback applies
+        XCTAssertEqual(MostlyGoodMetrics.getVariant("static_test", fallback: "control"), "control")
+        XCTAssertNil(MostlyGoodMetrics.getVariant("static_test"))
+    }
+
+    @available(iOS 13.0, macOS 10.15, tvOS 13.0, watchOS 6.0, *)
+    func testStaticReadyResolvesWithinTimeout() async {
+        let config = MGMConfiguration(apiKey: "test_key", trackAppLifecycleEvents: false)
+        MostlyGoodMetrics.configure(with: config)
+
+        let start = Date()
+        await MostlyGoodMetrics.ready(timeout: 1.0)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertLessThan(elapsed, 5.0, "Static ready() must resolve no later than its timeout")
+    }
+}
+
+// MARK: - Snake Case Conversion Tests
+
+final class SnakeCaseTests: XCTestCase {
+
+    func testBasicCamelCase() {
+        XCTAssertEqual("camelCase".toSnakeCase(), "camel_case")
+        XCTAssertEqual("myVariableName".toSnakeCase(), "my_variable_name")
+    }
+
+    func testPascalCase() {
+        XCTAssertEqual("PascalCase".toSnakeCase(), "pascal_case")
+        XCTAssertEqual("MyClassName".toSnakeCase(), "my_class_name")
+    }
+
+    func testWithSpaces() {
+        XCTAssertEqual("With Spaces".toSnakeCase(), "with__spaces")
+        XCTAssertEqual("multiple words here".toSnakeCase(), "multiple_words_here")
+    }
+
+    func testWithHyphens() {
+        XCTAssertEqual("with-hyphens".toSnakeCase(), "with_hyphens")
+        XCTAssertEqual("kebab-case-string".toSnakeCase(), "kebab_case_string")
+    }
+
+    func testWithNumbers() {
+        XCTAssertEqual("test123".toSnakeCase(), "test123")
+        XCTAssertEqual("test123Name".toSnakeCase(), "test123_name")
+        XCTAssertEqual("Version2Update".toSnakeCase(), "version2_update")
+    }
+
+    func testAlreadySnakeCase() {
+        XCTAssertEqual("already_snake_case".toSnakeCase(), "already_snake_case")
+        XCTAssertEqual("simple".toSnakeCase(), "simple")
+    }
+
+    func testUppercaseAcronyms() {
+        XCTAssertEqual("parseJSON".toSnakeCase(), "parse_j_s_o_n")
+        XCTAssertEqual("XMLParser".toSnakeCase(), "x_m_l_parser")
+        XCTAssertEqual("getHTTPResponse".toSnakeCase(), "get_h_t_t_p_response")
+    }
+
+    func testEmptyAndSingleChar() {
+        XCTAssertEqual("".toSnakeCase(), "")
+        XCTAssertEqual("a".toSnakeCase(), "a")
+        XCTAssertEqual("A".toSnakeCase(), "a")
+    }
+
+    func testMixedFormats() {
+        XCTAssertEqual("mixed-Case_and spaces".toSnakeCase(), "mixed__case_and_spaces")
+    }
+
+    func testJSReferenceContractPinnedOutputs() {
+        // Pinned against the shared JS reference implementation:
+        // name.replace(/([A-Z])/g, "_$1").replace(/[-\s]+/g, "_").toLowerCase().replace(/^_/, "")
+        XCTAssertEqual("Pricing-Test V2".toSnakeCase(), "pricing__test__v2")
+        XCTAssertEqual("A-B-Test".toSnakeCase(), "a__b__test")
+        XCTAssertEqual("ABTest".toSnakeCase(), "a_b_test")
+        XCTAssertEqual("button-color".toSnakeCase(), "button_color")
+        XCTAssertEqual("myExperiment2".toSnakeCase(), "my_experiment2")
     }
 }
