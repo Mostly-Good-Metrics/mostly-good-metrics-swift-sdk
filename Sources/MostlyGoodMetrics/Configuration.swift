@@ -48,6 +48,18 @@ public struct MGMConfiguration {
     /// network request at all. Ignored in `.server` mode.
     public var localExperiments: [MGMExperimentConfig]
 
+    /// Whether the SDK starts opted out of tracking (default: false)
+    /// Useful for consent-first apps: no events are collected until `optIn()` is called.
+    /// A persisted opt-in/opt-out choice (from `optIn()`/`optOut()`) always takes
+    /// precedence over this default.
+    public var optedOutByDefault: Bool
+
+    /// Whether to collect device properties (default: true)
+    /// When false, `$device_model`, `$device_type`, device manufacturer, locale,
+    /// and timezone are omitted from events entirely. Functional context
+    /// (platform, os_version, app_version) is still sent.
+    public var collectDeviceProperties: Bool
+
     /// Default API base URL
     public static let defaultBaseURL = URL(string: "https://ingest.mostlygoodmetrics.com")!
 
@@ -66,6 +78,8 @@ public struct MGMConfiguration {
     ///   - wrapperVersion: Optional wrapper SDK version
     ///   - experimentMode: How experiment variants are assigned (defaults to .server)
     ///   - localExperiments: Inline experiment configs for `.local` mode (defaults to none)
+    ///   - optedOutByDefault: Whether the SDK starts opted out until `optIn()` is called (defaults to false)
+    ///   - collectDeviceProperties: Whether to collect device properties like model, device type, locale, and timezone (defaults to true)
     public init(
         apiKey: String,
         baseURL: URL = MGMConfiguration.defaultBaseURL,
@@ -79,7 +93,9 @@ public struct MGMConfiguration {
         wrapperName: String? = nil,
         wrapperVersion: String? = nil,
         experimentMode: MGMExperimentMode = .server,
-        localExperiments: [MGMExperimentConfig] = []
+        localExperiments: [MGMExperimentConfig] = [],
+        optedOutByDefault: Bool = false,
+        collectDeviceProperties: Bool = true
     ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
@@ -94,5 +110,7 @@ public struct MGMConfiguration {
         self.wrapperVersion = wrapperVersion
         self.experimentMode = experimentMode
         self.localExperiments = localExperiments
+        self.optedOutByDefault = optedOutByDefault
+        self.collectDeviceProperties = collectDeviceProperties
     }
 }

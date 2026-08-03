@@ -33,6 +33,7 @@ public final class MostlyGoodMetrics {
     private static let anonymousIdKey = "MGM_anonymousId"
     private static let identifyHashKey = "MGM_identifyHash"
     private static let identifyTimestampKey = "MGM_identifyTimestamp"
+    private static let optedOutKey = "MGM_optedOut"
 
     // Keys for experiments cache
     private static let experimentsCacheKey = "MGM_experimentsCache"
@@ -41,9 +42,6 @@ public final class MostlyGoodMetrics {
     private static let experimentExposuresKey = "MGM_experimentExposures"
 
     // Keys for local experiment mode (on-device bucketing)
-    // TODO: When the privacy-controls branch merges, its forget-me reset /
-    // anonymous-ID rotation must also clear localExperimentAssignmentsKey so a
-    // reset user is re-bucketed under their new identity.
     private static let localExperimentAssignmentsKey = "MGM_localExperimentAssignments"
     private static let localExperimentConfigsCacheKey = "MGM_localExperimentConfigsCache"
     private static let localExperimentConfigsFetchedAtKey = "MGM_localExperimentConfigsFetchedAt"
@@ -114,6 +112,25 @@ public final class MostlyGoodMetrics {
     /// Whether the SDK is currently sending events
     public private(set) var isFlushing: Bool = false
 
+    /// Lock for thread-safe access to the opt-out state
+    private let optOutLock = NSLock()
+
+    /// Backing storage for `isOptedOut` (guarded by `optOutLock`)
+    private var _isOptedOut: Bool = false
+
+    /// Whether experiments loading was skipped because the SDK was opted out at init
+    /// (guarded by `experimentsLock`)
+    private var experimentsLoadSkipped: Bool = false
+
+    /// Whether the user has opted out of tracking.
+    /// While opted out, `track`, `identify`, and `flush` are no-ops and no
+    /// events are collected or sent. Use `optOut()` / `optIn()` to change.
+    public var isOptedOut: Bool {
+        optOutLock.lock()
+        defer { optOutLock.unlock() }
+        return _isOptedOut
+    }
+
     // MARK: - Initialization
 
     /// Configures the shared instance with the given configuration
@@ -150,10 +167,26 @@ public final class MostlyGoodMetrics {
         // Generate new session ID
         self.sessionId = UUID().uuidString
 
+        // Restore persisted opt-out choice (falls back to the configured default)
+        self._isOptedOut = Self.initialOptOutState(configuration: configuration)
+
         startFlushTimer()
         setupAppLifecycleObservers()
-        trackInstallOrUpdate()
-        loadExperiments()
+
+        if _isOptedOut {
+            // No tracking or network activity while opted out. Mark experiments
+            // as loaded (empty) so `ready()` resolves immediately with fallbacks;
+            // they are fetched when `optIn()` is called. In `.local` mode,
+            // inline or previously cached configs are still applied (no network)
+            // so on-device bucketing keeps working.
+            experimentsLoadSkipped = true
+            experimentsLoaded = true
+            loadExperimentsWhileOptedOut()
+            debugLog("Initialized opted out - tracking disabled")
+        } else {
+            trackInstallOrUpdate()
+            loadExperiments()
+        }
 
         debugLog("Initialized with \(self.storage.eventCount()) cached events")
     }
@@ -167,6 +200,7 @@ public final class MostlyGoodMetrics {
         self.userId = UserDefaults.standard.string(forKey: "MGM_userId")
         self.anonymousId = Self.initializeAnonymousId()
         self.sessionId = UUID().uuidString
+        self._isOptedOut = Self.initialOptOutState(configuration: configuration)
 
         startFlushTimer()
         setupAppLifecycleObservers()
@@ -184,6 +218,7 @@ public final class MostlyGoodMetrics {
         self.userId = nil
         self.anonymousId = Self.initializeAnonymousId()
         self.sessionId = UUID().uuidString
+        self._isOptedOut = Self.initialOptOutState(configuration: configuration)
 
         // Skip timers and lifecycle observers for test instances
         // Mark experiments as loaded for test instances
@@ -207,10 +242,19 @@ public final class MostlyGoodMetrics {
         self.userId = UserDefaults.standard.string(forKey: "MGM_userId")
         self.anonymousId = Self.initializeAnonymousId()
         self.sessionId = UUID().uuidString
+        self._isOptedOut = Self.initialOptOutState(configuration: configuration)
 
-        // Don't auto-load experiments if we want to test the loading flow manually
+        // Don't auto-load experiments if we want to test the loading flow manually.
+        // Mirrors the public initializer's opt-out gate: no experiments network
+        // activity while opted out.
         if !skipExperimentsLoad {
-            loadExperiments()
+            if _isOptedOut {
+                experimentsLoadSkipped = true
+                experimentsLoaded = true
+                loadExperimentsWhileOptedOut()
+            } else {
+                loadExperiments()
+            }
         }
     }
 
@@ -226,6 +270,11 @@ public final class MostlyGoodMetrics {
     ///   - name: The event name (alphanumeric + underscore, must start with letter)
     ///   - properties: Optional custom properties for the event
     public func track(_ name: String, properties: [String: Any]? = nil) {
+        guard !isOptedOut else {
+            debugLog("Opted out - dropping event: \(name)")
+            return
+        }
+
         guard validateEventName(name) else {
             debugLog("Invalid event name: \(name)")
             return
@@ -252,9 +301,11 @@ public final class MostlyGoodMetrics {
         event.appBuildNumber = appBuildNumber
         event.osVersion = osVersion
         event.environment = configuration.environment
-        event.deviceManufacturer = deviceManufacturer
-        event.locale = currentLocale
-        event.timezone = currentTimezone
+        if configuration.collectDeviceProperties {
+            event.deviceManufacturer = deviceManufacturer
+            event.locale = currentLocale
+            event.timezone = currentTimezone
+        }
 
         storage.store(event: event)
         debugLog("Tracked event: \(name)")
@@ -285,6 +336,11 @@ public final class MostlyGoodMetrics {
     ///   - userId: The user identifier
     ///   - profile: Optional profile data (email, name)
     public func identify(userId: String, profile: UserProfile? = nil) {
+        guard !isOptedOut else {
+            debugLog("Opted out - ignoring identify")
+            return
+        }
+
         let previousUserId = self.userId
         self.userId = userId
         debugLog("Identified user: \(userId)")
@@ -305,6 +361,97 @@ public final class MostlyGoodMetrics {
         self.userId = nil
         clearIdentifyState()
         debugLog("Reset user identity")
+    }
+
+    /// Resets all local SDK state ("forget me").
+    /// Clears the user ID and identify debounce state, purges the pending event
+    /// queue, clears super properties, and starts a new session.
+    /// - Parameter clearAnonymousId: When true, also rotates the anonymous ID so
+    ///   future events cannot be linked to the previous anonymous user, and clears
+    ///   persisted local experiment assignments so the new identity is re-bucketed
+    ///   fresh (default: false)
+    public func reset(clearAnonymousId: Bool = false) {
+        resetIdentity()
+        clearPendingEvents()
+        clearSuperProperties()
+        startNewSession()
+        if clearAnonymousId {
+            resetAnonymousId()
+        }
+        debugLog("Reset SDK state (clearAnonymousId: \(clearAnonymousId))")
+    }
+
+    /// Rotates the anonymous ID, generating and persisting a new one.
+    /// Subsequent anonymous events are attributed to the new ID and cannot be
+    /// linked to the previous one.
+    ///
+    /// Persisted local experiment assignments (`.local` experiment mode) are also
+    /// cleared: they were bucketed under the previous identity, so the rotated
+    /// anonymous ID is re-bucketed fresh on the next `getVariant()` call.
+    /// - Returns: The newly generated anonymous ID
+    @discardableResult
+    public func resetAnonymousId() -> String {
+        let newId = Self.generateAnonymousId()
+        UserDefaults.standard.set(newId, forKey: Self.anonymousIdKey)
+        self.anonymousId = newId
+
+        // Local experiment assignments belong to the previous identity - clear
+        // them so the new anonymous ID is re-bucketed fresh. (Plain reset() /
+        // resetIdentity() keeps them, matching server-mode stickiness.)
+        UserDefaults.standard.removeObject(forKey: Self.localExperimentAssignmentsKey)
+
+        debugLog("Reset anonymous ID")
+        return newId
+    }
+
+    // MARK: - Privacy (Opt-Out)
+
+    /// Opts the user out of all tracking.
+    /// Takes effect immediately: any queued events are purged, and `track`,
+    /// `identify`, and `flush` become no-ops. The choice is persisted across
+    /// app launches until `optIn()` is called.
+    public func optOut() {
+        optOutLock.lock()
+        _isOptedOut = true
+        optOutLock.unlock()
+
+        UserDefaults.standard.set(true, forKey: Self.optedOutKey)
+        storage.clear()
+        debugLog("Opted out of tracking - purged pending events")
+    }
+
+    /// Opts the user back in to tracking.
+    /// The choice is persisted across app launches and overrides
+    /// `MGMConfiguration.optedOutByDefault`.
+    public func optIn() {
+        optOutLock.lock()
+        _isOptedOut = false
+        optOutLock.unlock()
+
+        UserDefaults.standard.set(false, forKey: Self.optedOutKey)
+        debugLog("Opted in to tracking")
+
+        // Load experiments now if the initial load was skipped while opted out
+        var shouldLoadExperiments = false
+        experimentsLock.lock()
+        if experimentsLoadSkipped {
+            experimentsLoadSkipped = false
+            shouldLoadExperiments = true
+        }
+        experimentsLock.unlock()
+
+        if shouldLoadExperiments {
+            loadExperiments()
+        }
+    }
+
+    /// Resolves the initial opt-out state: a persisted `optIn()`/`optOut()`
+    /// choice always wins; otherwise the configured default applies.
+    private static func initialOptOutState(configuration: MGMConfiguration) -> Bool {
+        if UserDefaults.standard.object(forKey: optedOutKey) != nil {
+            return UserDefaults.standard.bool(forKey: optedOutKey)
+        }
+        return configuration.optedOutByDefault
     }
 
     /// Send $identify event if debounce conditions are met.
@@ -440,6 +587,13 @@ public final class MostlyGoodMetrics {
     /// (user, experiment, variant) combination. Dedup state is persisted in UserDefaults
     /// so relaunches don't re-fire exposures.
     private func trackExposureIfNeeded(experimentName: String, variant: String) {
+        // While opted out, no exposure is tracked and no dedup state is recorded,
+        // so the exposure can still fire after a later opt-in.
+        guard !isOptedOut else {
+            debugLog("Opted out - skipping $experiment_exposure for '\(experimentName)'")
+            return
+        }
+
         let exposureKey = "\(effectiveUserId)|\(experimentName)|\(variant)"
         let defaults = UserDefaults.standard
 
@@ -474,6 +628,26 @@ public final class MostlyGoodMetrics {
             loadServerExperiments()
         case .local:
             loadLocalExperiments()
+        }
+    }
+
+    /// Loads whatever experiment state is available without touching the network,
+    /// for use while opted out.
+    ///
+    /// In `.server` mode nothing is loaded (assignments come from the server, and
+    /// they are fetched when `optIn()` is called). In `.local` mode, inline configs
+    /// or previously cached configs are applied so on-device bucketing keeps
+    /// working from persisted/inline state - but no fetch or background
+    /// revalidation happens while opted out.
+    private func loadExperimentsWhileOptedOut() {
+        guard case .local = configuration.experimentMode else { return }
+
+        if !configuration.localExperiments.isEmpty {
+            applyLocalExperimentConfigs(configuration.localExperiments)
+            debugLog("Opted out - applied \(configuration.localExperiments.count) inline local experiment configs (no fetch)")
+        } else if let cachedConfigs = loadCachedExperimentConfigs() {
+            applyLocalExperimentConfigs(cachedConfigs)
+            debugLog("Opted out - applied \(cachedConfigs.count) cached experiment configs (no fetch)")
         }
     }
 
@@ -832,6 +1006,12 @@ public final class MostlyGoodMetrics {
     }
 
     private func performFlush(completion: ((Result<Void, MGMError>) -> Void)?) {
+        guard !isOptedOut else {
+            debugLog("Opted out - skipping flush")
+            completion?(.success(()))
+            return
+        }
+
         guard !isFlushing else {
             debugLog("Already flushing, skipping")
             completion?(.success(()))
@@ -848,6 +1028,7 @@ public final class MostlyGoodMetrics {
         isFlushing = true
         debugLog("Flushing \(events.count) events")
 
+        let collectDeviceProperties = configuration.collectDeviceProperties
         let context = MGMEventContext(
             platform: currentPlatform,
             appVersion: appVersion,
@@ -856,9 +1037,9 @@ public final class MostlyGoodMetrics {
             userId: effectiveUserId,
             sessionId: sessionId,
             environment: configuration.environment,
-            deviceManufacturer: deviceManufacturer,
-            locale: currentLocale,
-            timezone: currentTimezone
+            deviceManufacturer: collectDeviceProperties ? deviceManufacturer : nil,
+            locale: collectDeviceProperties ? currentLocale : nil,
+            timezone: collectDeviceProperties ? currentTimezone : nil
         )
 
         networkClient.sendEvents(events, context: context) { [weak self] result in
@@ -1078,11 +1259,13 @@ public final class MostlyGoodMetrics {
 
     private var systemProperties: [String: Any] {
         var props: [String: Any] = [
-            "$device_type": deviceType,
             "$sdk": configuration.wrapperName ?? "swift"
         ]
-        if let model = deviceModel {
-            props["$device_model"] = model
+        if configuration.collectDeviceProperties {
+            props["$device_type"] = deviceType
+            if let model = deviceModel {
+                props["$device_model"] = model
+            }
         }
         return props
     }
@@ -1143,6 +1326,34 @@ public extension MostlyGoodMetrics {
     /// Flushes events using the shared instance
     static func flush() {
         shared?.flush()
+    }
+
+    /// Opts the user out of all tracking using the shared instance
+    static func optOut() {
+        shared?.optOut()
+    }
+
+    /// Opts the user back in to tracking using the shared instance
+    static func optIn() {
+        shared?.optIn()
+    }
+
+    /// Whether the user has opted out of tracking (false if not configured)
+    static var isOptedOut: Bool {
+        shared?.isOptedOut ?? false
+    }
+
+    /// Rotates the anonymous ID using the shared instance
+    /// - Returns: The newly generated anonymous ID, or nil if not configured
+    @discardableResult
+    static func resetAnonymousId() -> String? {
+        shared?.resetAnonymousId()
+    }
+
+    /// Resets all local SDK state using the shared instance ("forget me")
+    /// - Parameter clearAnonymousId: When true, also rotates the anonymous ID
+    static func reset(clearAnonymousId: Bool = false) {
+        shared?.reset(clearAnonymousId: clearAnonymousId)
     }
 
     /// Sets a single super property using the shared instance
