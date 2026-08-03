@@ -38,6 +38,18 @@ public struct MGMConfiguration {
     /// Used by hybrid framework SDKs to identify their version
     public var wrapperVersion: String?
 
+    /// Whether the SDK starts opted out of tracking (default: false)
+    /// Useful for consent-first apps: no events are collected until `optIn()` is called.
+    /// A persisted opt-in/opt-out choice (from `optIn()`/`optOut()`) always takes
+    /// precedence over this default.
+    public var optedOutByDefault: Bool
+
+    /// Whether to collect device properties (default: true)
+    /// When false, `$device_model`, `$device_type`, device manufacturer, locale,
+    /// and timezone are omitted from events entirely. Functional context
+    /// (platform, os_version, app_version) is still sent.
+    public var collectDeviceProperties: Bool
+
     /// Default API base URL
     public static let defaultBaseURL = URL(string: "https://ingest.mostlygoodmetrics.com")!
 
@@ -54,6 +66,8 @@ public struct MGMConfiguration {
     ///   - trackAppLifecycleEvents: Whether to auto-track lifecycle events (defaults to true)
     ///   - wrapperName: Optional wrapper SDK name (e.g., "react-native", "flutter")
     ///   - wrapperVersion: Optional wrapper SDK version
+    ///   - optedOutByDefault: Whether the SDK starts opted out until `optIn()` is called (defaults to false)
+    ///   - collectDeviceProperties: Whether to collect device properties like model, device type, locale, and timezone (defaults to true)
     public init(
         apiKey: String,
         baseURL: URL = MGMConfiguration.defaultBaseURL,
@@ -65,7 +79,9 @@ public struct MGMConfiguration {
         enableDebugLogging: Bool = false,
         trackAppLifecycleEvents: Bool = true,
         wrapperName: String? = nil,
-        wrapperVersion: String? = nil
+        wrapperVersion: String? = nil,
+        optedOutByDefault: Bool = false,
+        collectDeviceProperties: Bool = true
     ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
@@ -78,5 +94,7 @@ public struct MGMConfiguration {
         self.trackAppLifecycleEvents = trackAppLifecycleEvents
         self.wrapperName = wrapperName
         self.wrapperVersion = wrapperVersion
+        self.optedOutByDefault = optedOutByDefault
+        self.collectDeviceProperties = collectDeviceProperties
     }
 }

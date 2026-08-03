@@ -12,6 +12,7 @@ A lightweight Swift SDK for tracking analytics events with [MostlyGoodMetrics](h
   - [UIKit Initialization](#uikit-initialization)
   - [SwiftUI Initialization](#swiftui-initialization)
 - [User Identification](#user-identification)
+- [Privacy](#privacy)
 - [Configuration Options](#configuration-options)
 - [Automatic Events](#automatic-events)
 - [Automatic Context](#automatic-context)
@@ -156,6 +157,83 @@ MostlyGoodMetrics.shared?.resetIdentity()
 
 This clears the persisted user ID and resets to anonymous tracking. Events will use the anonymous ID until `identify()` is called again.
 
+## Privacy
+
+The SDK is designed to be privacy-friendly by default:
+
+- **No IDFA or advertising identifiers** — the SDK never reads the IDFA and never triggers an App Tracking Transparency prompt
+- **No location, contacts, or other sensitive data** — nothing beyond what's listed below is ever collected
+- **`identify()` is optional** — without it, users are tracked with a random, app-scoped anonymous ID (`$anon_...`) that is not derived from the device or any external identity
+
+### What's Auto-Collected
+
+Every event includes the fields documented in [Automatic Context](#automatic-context): the user ID (or random anonymous ID), a per-launch session ID, platform, OS version, app version/build, environment, device type/model, device manufacturer, locale, and timezone. Nothing else is collected automatically.
+
+### Opt-Out
+
+Give users a way to opt out of analytics entirely:
+
+```swift
+MostlyGoodMetrics.optOut()   // Stops all tracking immediately
+MostlyGoodMetrics.optIn()    // Resumes tracking
+
+if MostlyGoodMetrics.isOptedOut {
+    // Hide analytics-related UI, etc.
+}
+```
+
+When opted out:
+
+- `track()`, `identify()`, and `flush()` become no-ops
+- Any queued (unsent) events are purged immediately
+- The choice is persisted in UserDefaults and survives app relaunches
+
+For consent-first apps (e.g. GDPR), start opted out and only begin tracking after the user consents:
+
+```swift
+let config = MGMConfiguration(
+    apiKey: "mgm_proj_your_api_key",
+    optedOutByDefault: true // No events until optIn() is called
+)
+MostlyGoodMetrics.configure(with: config)
+
+// Later, after the user grants consent:
+MostlyGoodMetrics.optIn()
+```
+
+A persisted `optIn()`/`optOut()` choice always takes precedence over `optedOutByDefault` on subsequent launches.
+
+### Rotating the Anonymous ID
+
+Rotate the persisted anonymous ID so future events cannot be linked to earlier anonymous activity:
+
+```swift
+MostlyGoodMetrics.shared?.resetAnonymousId()
+```
+
+### Forget Me
+
+For a full local reset (e.g. account deletion), use `reset`:
+
+```swift
+MostlyGoodMetrics.shared?.reset(clearAnonymousId: true)
+```
+
+This clears the user ID, purges the pending event queue, clears super properties, starts a new session, and (with `clearAnonymousId: true`) rotates the anonymous ID. With the default `clearAnonymousId: false`, the anonymous ID is kept.
+
+### Limiting Device Properties
+
+To minimize device fingerprinting surface, disable device property collection:
+
+```swift
+let config = MGMConfiguration(
+    apiKey: "mgm_proj_your_api_key",
+    collectDeviceProperties: false
+)
+```
+
+When `collectDeviceProperties` is `false`, events omit `$device_model`, `$device_type`, `device_manufacturer`, `locale`, and `timezone` entirely. Functional context (`platform`, `os_version`, `app_version`) is still sent.
+
 ## Configuration Options
 
 For more control, use `MGMConfiguration`:
@@ -186,6 +264,8 @@ MostlyGoodMetrics.configure(with: config)
 | `maxStoredEvents` | `10000` | Max cached events |
 | `enableDebugLogging` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
+| `optedOutByDefault` | `false` | Start opted out until `optIn()` is called (consent-first apps) |
+| `collectDeviceProperties` | `true` | Collect device model/type, manufacturer, locale, and timezone |
 
 ## Automatic Events
 

@@ -5,9 +5,10 @@ final class MostlyGoodMetricsTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        // Clear persisted user ID and super properties before each test
+        // Clear persisted user ID, super properties, and opt-out state before each test
         UserDefaults.standard.removeObject(forKey: "MGM_userId")
         UserDefaults.standard.removeObject(forKey: "MGM_superProperties")
+        UserDefaults.standard.removeObject(forKey: "MGM_optedOut")
     }
 
     override func tearDown() {
@@ -17,6 +18,7 @@ final class MostlyGoodMetricsTests: XCTestCase {
         MostlyGoodMetrics.shared?.clearSuperProperties()
         UserDefaults.standard.removeObject(forKey: "MGM_userId")
         UserDefaults.standard.removeObject(forKey: "MGM_superProperties")
+        UserDefaults.standard.removeObject(forKey: "MGM_optedOut")
     }
 
     // MARK: - Configuration Tests
@@ -3041,5 +3043,356 @@ final class MacLifecyclePolicyTests: XCTestCase {
             now: now,
             isMacLike: true
         ))
+    }
+}
+
+// MARK: - Privacy Controls Tests
+
+final class PrivacyControlsTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        // Clear persisted privacy/identity state before each test
+        UserDefaults.standard.removeObject(forKey: "MGM_optedOut")
+        UserDefaults.standard.removeObject(forKey: "MGM_userId")
+        UserDefaults.standard.removeObject(forKey: "MGM_superProperties")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyHash")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyTimestamp")
+    }
+
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: "MGM_optedOut")
+        UserDefaults.standard.removeObject(forKey: "MGM_userId")
+        UserDefaults.standard.removeObject(forKey: "MGM_superProperties")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyHash")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyTimestamp")
+        super.tearDown()
+    }
+
+    private func makeClient(
+        storage: InMemoryEventStorage,
+        optedOutByDefault: Bool = false,
+        collectDeviceProperties: Bool = true
+    ) -> MostlyGoodMetrics {
+        let config = MGMConfiguration(
+            apiKey: "test_key",
+            optedOutByDefault: optedOutByDefault,
+            collectDeviceProperties: collectDeviceProperties
+        )
+        return MostlyGoodMetrics(configuration: config, storage: storage)
+    }
+
+    // MARK: - Opt-Out Tests
+
+    func testDefaultIsOptedIn() {
+        let client = makeClient(storage: InMemoryEventStorage())
+        XCTAssertFalse(client.isOptedOut)
+    }
+
+    func testOptOutMakesTrackNoOp() {
+        let storage = InMemoryEventStorage()
+        let client = makeClient(storage: storage)
+
+        client.optOut()
+        XCTAssertTrue(client.isOptedOut)
+
+        client.track("should_be_dropped")
+
+        let expectation = self.expectation(description: "Opt-out drops events")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(storage.eventCount(), 0, "No events should be stored while opted out")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testOptOutPurgesQueuedEvents() {
+        let storage = InMemoryEventStorage()
+        let client = makeClient(storage: storage)
+
+        client.track("event1")
+        client.track("event2")
+
+        let expectation = self.expectation(description: "Opt-out purges queue")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(storage.eventCount(), 2)
+
+            client.optOut()
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                XCTAssertEqual(storage.eventCount(), 0, "Queued events should be purged on opt-out")
+                expectation.fulfill()
+            }
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testOptOutMakesIdentifyNoOp() {
+        let storage = InMemoryEventStorage()
+        let client = makeClient(storage: storage)
+
+        client.optOut()
+        client.identify(userId: "ignored_user", profile: UserProfile(email: "ignored@example.com"))
+
+        XCTAssertNil(client.userId, "identify should be a no-op while opted out")
+
+        let expectation = self.expectation(description: "Opt-out ignores identify")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(storage.eventCount(), 0, "No $identify event should be stored while opted out")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testOptOutMakesFlushNoOp() {
+        let storage = InMemoryEventStorage()
+        let mockNetwork = MockNetworkClient(result: .success(()))
+        let config = MGMConfiguration(apiKey: "test_key")
+        let client = MostlyGoodMetrics(configuration: config, storage: storage, networkClient: mockNetwork)
+
+        // Pre-load storage directly, then opt out without purging via a fresh store
+        storage.store(event: MGMEvent(name: "event1"))
+
+        client.optOut()
+
+        let expectation = self.expectation(description: "Opt-out skips flush")
+        client.flush { result in
+            switch result {
+            case .success:
+                XCTAssertEqual(mockNetwork.sendCount, 0, "No network calls should happen while opted out")
+                expectation.fulfill()
+            case .failure:
+                XCTFail("Flush should no-op successfully while opted out")
+            }
+        }
+        waitForExpectations(timeout: 5)
+    }
+
+    func testOptInResumesTracking() {
+        let storage = InMemoryEventStorage()
+        let client = makeClient(storage: storage)
+
+        client.optOut()
+        client.track("dropped_event")
+
+        client.optIn()
+        XCTAssertFalse(client.isOptedOut)
+        client.track("tracked_event")
+
+        let expectation = self.expectation(description: "Opt-in resumes tracking")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(storage.eventCount(), 1)
+            let events = storage.fetchEvents(limit: 10)
+            XCTAssertEqual(events.first?.name, "tracked_event")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testOptOutPersistsAcrossInstances() {
+        let client1 = makeClient(storage: InMemoryEventStorage())
+        client1.optOut()
+
+        // Simulate app relaunch with a new instance
+        let client2 = makeClient(storage: InMemoryEventStorage())
+        XCTAssertTrue(client2.isOptedOut, "Opt-out should persist across instances")
+
+        // Opt back in and verify persistence again
+        client2.optIn()
+        let client3 = makeClient(storage: InMemoryEventStorage())
+        XCTAssertFalse(client3.isOptedOut, "Opt-in should persist across instances")
+    }
+
+    func testOptOutPersistedInUserDefaults() {
+        let client = makeClient(storage: InMemoryEventStorage())
+
+        client.optOut()
+        XCTAssertEqual(UserDefaults.standard.bool(forKey: "MGM_optedOut"), true)
+
+        client.optIn()
+        XCTAssertEqual(UserDefaults.standard.bool(forKey: "MGM_optedOut"), false)
+    }
+
+    // MARK: - Opted Out By Default Tests
+
+    func testOptedOutByDefaultStartsOptedOut() {
+        let storage = InMemoryEventStorage()
+        let client = makeClient(storage: storage, optedOutByDefault: true)
+
+        XCTAssertTrue(client.isOptedOut)
+
+        client.track("consent_pending_event")
+
+        let expectation = self.expectation(description: "Opted out by default drops events")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(storage.eventCount(), 0)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testOptedOutByDefaultCanOptIn() {
+        let storage = InMemoryEventStorage()
+        let client = makeClient(storage: storage, optedOutByDefault: true)
+
+        client.optIn()
+        XCTAssertFalse(client.isOptedOut)
+
+        client.track("consented_event")
+
+        let expectation = self.expectation(description: "Opt-in after consent")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(storage.eventCount(), 1)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testPersistedOptInOverridesOptedOutByDefault() {
+        let client1 = makeClient(storage: InMemoryEventStorage(), optedOutByDefault: true)
+        client1.optIn()
+
+        // Relaunch: persisted opt-in choice wins over the configured default
+        let client2 = makeClient(storage: InMemoryEventStorage(), optedOutByDefault: true)
+        XCTAssertFalse(client2.isOptedOut, "Persisted opt-in should override optedOutByDefault")
+    }
+
+    // MARK: - Anonymous ID Rotation Tests
+
+    func testResetAnonymousIdRotatesId() {
+        let client = makeClient(storage: InMemoryEventStorage())
+        let originalId = client.anonymousId
+
+        let newId = client.resetAnonymousId()
+
+        XCTAssertNotEqual(newId, originalId, "resetAnonymousId should generate a new ID")
+        XCTAssertEqual(client.anonymousId, newId)
+        XCTAssertTrue(newId.hasPrefix("$anon_"), "New anonymous ID should keep the $anon_ prefix")
+    }
+
+    func testResetAnonymousIdPersists() {
+        let client1 = makeClient(storage: InMemoryEventStorage())
+        let newId = client1.resetAnonymousId()
+
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "MGM_anonymousId"), newId)
+
+        // A new instance should restore the rotated ID
+        let client2 = makeClient(storage: InMemoryEventStorage())
+        XCTAssertEqual(client2.anonymousId, newId)
+    }
+
+    func testResetAnonymousIdUsedForSubsequentEvents() {
+        let storage = InMemoryEventStorage()
+        let client = makeClient(storage: storage)
+
+        let newId = client.resetAnonymousId()
+        client.track("after_rotation")
+
+        let expectation = self.expectation(description: "Rotated ID in events")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            XCTAssertEqual(events.first?.userId, newId, "Events should use the rotated anonymous ID")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    // MARK: - Reset ("Forget Me") Tests
+
+    func testResetClearsLocalState() {
+        let storage = InMemoryEventStorage()
+        let client = makeClient(storage: storage)
+
+        client.identify(userId: "user123")
+        client.setSuperProperty("plan", value: "premium")
+        client.track("event_before_reset")
+        let originalSessionId = client.sessionId
+        let originalAnonymousId = client.anonymousId
+
+        let expectation = self.expectation(description: "Reset clears state")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            XCTAssertEqual(storage.eventCount(), 1)
+
+            client.reset()
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                XCTAssertNil(client.userId, "Reset should clear the user ID")
+                XCTAssertEqual(storage.eventCount(), 0, "Reset should purge the pending queue")
+                XCTAssertTrue(client.getSuperProperties().isEmpty, "Reset should clear super properties")
+                XCTAssertNotEqual(client.sessionId, originalSessionId, "Reset should start a new session")
+                XCTAssertEqual(client.anonymousId, originalAnonymousId, "Reset should keep the anonymous ID by default")
+                expectation.fulfill()
+            }
+        }
+        waitForExpectations(timeout: 2)
+    }
+
+    func testResetWithClearAnonymousIdRotatesId() {
+        let client = makeClient(storage: InMemoryEventStorage())
+
+        client.identify(userId: "user123")
+        let originalAnonymousId = client.anonymousId
+
+        client.reset(clearAnonymousId: true)
+
+        XCTAssertNil(client.userId)
+        XCTAssertNotEqual(client.anonymousId, originalAnonymousId, "reset(clearAnonymousId: true) should rotate the anonymous ID")
+        XCTAssertTrue(client.anonymousId.hasPrefix("$anon_"))
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "MGM_anonymousId"), client.anonymousId)
+    }
+
+    // MARK: - Device Property Collection Tests
+
+    func testCollectDevicePropertiesEnabledByDefault() {
+        let storage = InMemoryEventStorage()
+        let client = makeClient(storage: storage)
+
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "Device properties collected by default")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            let event = events.first
+            XCTAssertNotNil(event?.properties?["$device_type"]?.value as? String)
+            XCTAssertEqual(event?.deviceManufacturer, "Apple")
+            XCTAssertNotNil(event?.locale)
+            XCTAssertNotNil(event?.timezone)
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testCollectDevicePropertiesDisabledOmitsDeviceProperties() {
+        let storage = InMemoryEventStorage()
+        let client = makeClient(storage: storage, collectDeviceProperties: false)
+
+        client.track("test_event")
+
+        let expectation = self.expectation(description: "Device properties omitted")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 1)
+            let event = events.first
+            XCTAssertNotNil(event, "Event should still be tracked")
+
+            // Device properties must be omitted entirely
+            XCTAssertNil(event?.properties?["$device_type"], "$device_type should be omitted")
+            XCTAssertNil(event?.properties?["$device_model"], "$device_model should be omitted")
+            XCTAssertNil(event?.deviceManufacturer, "device_manufacturer should be omitted")
+            XCTAssertNil(event?.locale, "locale should be omitted")
+            XCTAssertNil(event?.timezone, "timezone should be omitted")
+
+            // Functional context is still sent
+            XCTAssertNotNil(event?.platform)
+            XCTAssertNotNil(event?.osVersion)
+            XCTAssertEqual(event?.properties?["$sdk"]?.value as? String, "swift")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testConfigurationPrivacyDefaults() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        XCTAssertFalse(config.optedOutByDefault)
+        XCTAssertTrue(config.collectDeviceProperties)
     }
 }
