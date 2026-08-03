@@ -2105,6 +2105,10 @@ class MockNetworkClient: NetworkClientProtocol {
     func fetchExperiments(userId: String, anonymousId: String?, completion: @escaping (Result<[String: String], MGMError>) -> Void) {
         completion(.success([:]))
     }
+
+    func fetchExperimentConfigs(completion: @escaping (Result<[MGMExperimentConfig], MGMError>) -> Void) {
+        completion(.success([]))
+    }
 }
 
 /// Mock network client that returns results in sequence
@@ -2128,6 +2132,10 @@ class SequentialMockNetworkClient: NetworkClientProtocol {
     func fetchExperiments(userId: String, anonymousId: String?, completion: @escaping (Result<[String: String], MGMError>) -> Void) {
         completion(.success([:]))
     }
+
+    func fetchExperimentConfigs(completion: @escaping (Result<[MGMExperimentConfig], MGMError>) -> Void) {
+        completion(.success([]))
+    }
 }
 
 // MARK: - A/B Testing Mock Network Client
@@ -2136,7 +2144,9 @@ class SequentialMockNetworkClient: NetworkClientProtocol {
 class ExperimentsMockNetworkClient: NetworkClientProtocol {
     private let lock = NSLock()
     private var _experimentsResult: Result<[String: String], MGMError>
+    private var _experimentConfigsResult: Result<[MGMExperimentConfig], MGMError>
     private var _fetchExperimentsCallCount = 0
+    private var _fetchExperimentConfigsCallCount = 0
     private var _lastFetchedUserId: String?
     private var _lastFetchedAnonymousId: String?
 
@@ -2144,8 +2154,15 @@ class ExperimentsMockNetworkClient: NetworkClientProtocol {
         get { lock.lock(); defer { lock.unlock() }; return _experimentsResult }
         set { lock.lock(); defer { lock.unlock() }; _experimentsResult = newValue }
     }
+    var experimentConfigsResult: Result<[MGMExperimentConfig], MGMError> {
+        get { lock.lock(); defer { lock.unlock() }; return _experimentConfigsResult }
+        set { lock.lock(); defer { lock.unlock() }; _experimentConfigsResult = newValue }
+    }
     var fetchExperimentsCallCount: Int {
         lock.lock(); defer { lock.unlock() }; return _fetchExperimentsCallCount
+    }
+    var fetchExperimentConfigsCallCount: Int {
+        lock.lock(); defer { lock.unlock() }; return _fetchExperimentConfigsCallCount
     }
     var lastFetchedUserId: String? {
         lock.lock(); defer { lock.unlock() }; return _lastFetchedUserId
@@ -2154,8 +2171,12 @@ class ExperimentsMockNetworkClient: NetworkClientProtocol {
         lock.lock(); defer { lock.unlock() }; return _lastFetchedAnonymousId
     }
 
-    init(experimentsResult: Result<[String: String], MGMError> = .success([:])) {
+    init(
+        experimentsResult: Result<[String: String], MGMError> = .success([:]),
+        experimentConfigsResult: Result<[MGMExperimentConfig], MGMError> = .success([])
+    ) {
         self._experimentsResult = experimentsResult
+        self._experimentConfigsResult = experimentConfigsResult
     }
 
     func sendEvents(_ events: [MGMEvent], context: MGMEventContext?, completion: @escaping (Result<Void, MGMError>) -> Void) {
@@ -2168,6 +2189,17 @@ class ExperimentsMockNetworkClient: NetworkClientProtocol {
         _lastFetchedUserId = userId
         _lastFetchedAnonymousId = anonymousId
         let result = _experimentsResult
+        lock.unlock()
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            completion(result)
+        }
+    }
+
+    func fetchExperimentConfigs(completion: @escaping (Result<[MGMExperimentConfig], MGMError>) -> Void) {
+        lock.lock()
+        _fetchExperimentConfigsCallCount += 1
+        let result = _experimentConfigsResult
         lock.unlock()
 
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
@@ -2200,6 +2232,10 @@ class ManualExperimentsMockNetworkClient: NetworkClientProtocol {
         _fetchExperimentsCallCount += 1
         pendingCompletions.append(completion)
         lock.unlock()
+    }
+
+    func fetchExperimentConfigs(completion: @escaping (Result<[MGMExperimentConfig], MGMError>) -> Void) {
+        completion(.success([]))
     }
 
     /// Fires the oldest pending fetch completion with the given result.
@@ -3043,6 +3079,531 @@ final class MacLifecyclePolicyTests: XCTestCase {
             now: now,
             isMacLike: true
         ))
+    }
+}
+
+// MARK: - Local Bucketing Golden Vector Tests
+
+/// Golden vectors for the cross-SDK on-device bucketing algorithm:
+/// bucket = first 8 bytes of SHA256(utf8("<experiment_uuid>:<effective_user_id>"))
+/// as a big-endian UInt64; variant = variants[bucket % variants.count].
+/// These vectors are shared across all MostlyGoodMetrics SDKs and must never drift.
+final class LocalBucketingGoldenVectorTests: XCTestCase {
+
+    private struct GoldenVector {
+        let experimentId: String
+        let userId: String
+        let variants: [String]
+        let bucket: UInt64
+        let expectedVariant: String
+    }
+
+    private let vectors: [GoldenVector] = [
+        GoldenVector(
+            experimentId: "7b1e8a90-4c2d-4f6a-9e3b-2a1d5c8f0e71",
+            userId: "user_123",
+            variants: ["control", "treatment"],
+            bucket: 11452140836674321702,
+            expectedVariant: "control"
+        ),
+        GoldenVector(
+            experimentId: "7b1e8a90-4c2d-4f6a-9e3b-2a1d5c8f0e71",
+            userId: "$anon_abc123def456",
+            variants: ["control", "treatment"],
+            bucket: 10935638356306450407,
+            expectedVariant: "treatment"
+        ),
+        GoldenVector(
+            experimentId: "3f9c2d11-8b7a-4e5f-a0c6-91d2e3f4a5b6",
+            userId: "user_123",
+            variants: ["a", "b", "c"],
+            bucket: 3772238658190659659,
+            expectedVariant: "c"
+        ),
+        GoldenVector(
+            experimentId: "3f9c2d11-8b7a-4e5f-a0c6-91d2e3f4a5b6",
+            userId: "chris@nihongo.example",
+            variants: ["a", "b", "c"],
+            bucket: 15293329125595004806,
+            expectedVariant: "b"
+        ),
+        GoldenVector(
+            experimentId: "c0ffee00-1234-5678-9abc-def012345678",
+            userId: "u",
+            variants: ["on", "off"],
+            bucket: 5314609686893464838,
+            expectedVariant: "on"
+        ),
+        GoldenVector(
+            experimentId: "c0ffee00-1234-5678-9abc-def012345678",
+            userId: "日本語ユーザー",
+            variants: ["on", "off"],
+            bucket: 15854517259962621242,
+            expectedVariant: "on"
+        ),
+        GoldenVector(
+            experimentId: "aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000",
+            userId: "user_with_long_id_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            variants: ["v1", "v2", "v3", "v4", "v5"],
+            bucket: 16479651874404423415,
+            expectedVariant: "v1"
+        ),
+        GoldenVector(
+            experimentId: "aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000",
+            userId: "",
+            variants: ["v1", "v2"],
+            bucket: 2902893145859674316,
+            expectedVariant: "v1"
+        )
+    ]
+
+    func testGoldenVectorBuckets() {
+        for vector in vectors {
+            XCTAssertEqual(
+                MGMLocalBucketing.bucket(experimentId: vector.experimentId, userId: vector.userId),
+                vector.bucket,
+                "Bucket mismatch for experiment \(vector.experimentId), user '\(vector.userId)'"
+            )
+        }
+    }
+
+    func testGoldenVectorVariants() {
+        for vector in vectors {
+            XCTAssertEqual(
+                MGMLocalBucketing.variant(
+                    experimentId: vector.experimentId,
+                    userId: vector.userId,
+                    variants: vector.variants
+                ),
+                vector.expectedVariant,
+                "Variant mismatch for experiment \(vector.experimentId), user '\(vector.userId)'"
+            )
+        }
+    }
+
+    func testVariantIsNilForEmptyVariantsList() {
+        XCTAssertNil(MGMLocalBucketing.variant(
+            experimentId: "7b1e8a90-4c2d-4f6a-9e3b-2a1d5c8f0e71",
+            userId: "user_123",
+            variants: []
+        ))
+    }
+}
+
+// MARK: - Local Experiment Mode Tests
+
+final class LocalExperimentsTests: XCTestCase {
+
+    /// Golden-vector experiment: "user_123" -> "control", "$anon_abc123def456" -> "treatment"
+    private let buttonColorExperiment = MGMExperimentConfig(
+        id: "7b1e8a90-4c2d-4f6a-9e3b-2a1d5c8f0e71",
+        name: "button-color",
+        variants: ["control", "treatment"]
+    )
+
+    override func setUp() {
+        super.setUp()
+        clearLocalExperimentsDefaults()
+    }
+
+    override func tearDown() {
+        super.tearDown()
+        clearLocalExperimentsDefaults()
+        MostlyGoodMetrics.shared?.clearSuperProperties()
+    }
+
+    private func clearLocalExperimentsDefaults() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: "MGM_localExperimentAssignments")
+        defaults.removeObject(forKey: "MGM_localExperimentConfigsCache")
+        defaults.removeObject(forKey: "MGM_localExperimentConfigsFetchedAt")
+        defaults.removeObject(forKey: "MGM_experimentExposures")
+        defaults.removeObject(forKey: "MGM_userId")
+        defaults.removeObject(forKey: "MGM_anonymousId")
+        defaults.removeObject(forKey: "MGM_superProperties")
+        defaults.removeObject(forKey: "MGM_optedOut")
+    }
+
+    private func makeLocalConfig(
+        localExperiments: [MGMExperimentConfig] = [],
+        optedOutByDefault: Bool = false
+    ) -> MGMConfiguration {
+        MGMConfiguration(
+            apiKey: "test_key",
+            trackAppLifecycleEvents: false,
+            experimentMode: .local,
+            localExperiments: localExperiments,
+            optedOutByDefault: optedOutByDefault
+        )
+    }
+
+    /// Blocks the test for the given duration (lets async mock completions land).
+    private func waitBriefly(_ seconds: TimeInterval = 0.3) {
+        let exp = expectation(description: "brief wait")
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { exp.fulfill() }
+        waitForExpectations(timeout: seconds + 2)
+    }
+
+    private func exposureEvents(in storage: InMemoryEventStorage) -> [MGMEvent] {
+        storage.fetchEvents(limit: 1000).filter { $0.name == "$experiment_exposure" }
+    }
+
+    // MARK: - Inline Configs (zero network)
+
+    func testInlineConfigsBucketOnDeviceWithoutAnyFetch() {
+        UserDefaults.standard.set("user_123", forKey: "MGM_userId")
+
+        let mockNetwork = ExperimentsMockNetworkClient()
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [buttonColorExperiment]),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        // Inline configs load synchronously; matches the golden vector for user_123
+        XCTAssertEqual(sdk.getVariant("button-color"), "control")
+        XCTAssertEqual(mockNetwork.fetchExperimentsCallCount, 0, "Local mode must not fetch server assignments")
+        XCTAssertEqual(mockNetwork.fetchExperimentConfigsCallCount, 0, "Inline configs must not trigger a configs fetch")
+    }
+
+    func testInlineConfigsReadyResolvesImmediately() async {
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [buttonColorExperiment]),
+            storage: InMemoryEventStorage(),
+            networkClient: ExperimentsMockNetworkClient(),
+            skipExperimentsLoad: false
+        )
+
+        // Should return without waiting for any timeout
+        await sdk.ready(timeout: 5.0)
+        XCTAssertNotNil(sdk.getVariant("button-color"))
+    }
+
+    // MARK: - Fetched Configs
+
+    func testFetchedConfigsBucketOnDevice() {
+        UserDefaults.standard.set("user_123", forKey: "MGM_userId")
+
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentConfigsResult: .success([buttonColorExperiment])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        waitBriefly()
+
+        XCTAssertEqual(sdk.getVariant("button-color"), "control")
+        XCTAssertEqual(mockNetwork.fetchExperimentConfigsCallCount, 1, "Should have fetched configs exactly once on init")
+        XCTAssertEqual(mockNetwork.fetchExperimentsCallCount, 0, "Local mode must never call the server-assignment endpoint")
+    }
+
+    func testFetchedConfigsAreCachedAndServedWhenLaterFetchFails() {
+        UserDefaults.standard.set("user_123", forKey: "MGM_userId")
+
+        // First "launch" fetches and caches configs
+        let mockNetwork1 = ExperimentsMockNetworkClient(
+            experimentConfigsResult: .success([buttonColorExperiment])
+        )
+        let sdk1 = MostlyGoodMetrics(
+            configuration: makeLocalConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork1,
+            skipExperimentsLoad: false
+        )
+        waitBriefly()
+        XCTAssertEqual(sdk1.getVariant("button-color"), "control")
+
+        // Second "launch" cannot reach the server but serves the cached configs
+        let mockNetwork2 = ExperimentsMockNetworkClient(
+            experimentConfigsResult: .failure(.networkError(NSError(domain: "test", code: -1)))
+        )
+        let sdk2 = MostlyGoodMetrics(
+            configuration: makeLocalConfig(),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork2,
+            skipExperimentsLoad: false
+        )
+        waitBriefly()
+        XCTAssertEqual(sdk2.getVariant("button-color"), "control", "Cached configs should be served offline")
+    }
+
+    func testGetVariantReturnsFallbackForUnknownExperiment() {
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [buttonColorExperiment]),
+            storage: InMemoryEventStorage(),
+            networkClient: ExperimentsMockNetworkClient(),
+            skipExperimentsLoad: false
+        )
+
+        XCTAssertEqual(sdk.getVariant("unknown_experiment", fallback: "fallback"), "fallback")
+        XCTAssertNil(sdk.getVariant("unknown_experiment"))
+    }
+
+    // MARK: - Sticky Assignments
+
+    func testAssignmentIsStickyAcrossIdentify() {
+        // Anonymous at first launch: variant is bucketed from the anonymous ID
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [buttonColorExperiment]),
+            storage: InMemoryEventStorage(),
+            networkClient: ExperimentsMockNetworkClient(),
+            skipExperimentsLoad: false
+        )
+
+        guard let anonymousVariant = sdk.getVariant("button-color") else {
+            XCTFail("Expected a variant for the anonymous user")
+            return
+        }
+
+        // Identifying must NOT re-bucket: the anonymous-era variant sticks
+        // (matches server behavior)
+        sdk.identify(userId: "user_123")
+        waitBriefly()
+        XCTAssertEqual(sdk.getVariant("button-color"), anonymousVariant, "identify() must not re-bucket a sticky local assignment")
+    }
+
+    func testAssignmentIsPersistedPerExperimentUUID() {
+        UserDefaults.standard.set("user_123", forKey: "MGM_userId")
+
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [buttonColorExperiment]),
+            storage: InMemoryEventStorage(),
+            networkClient: ExperimentsMockNetworkClient(),
+            skipExperimentsLoad: false
+        )
+
+        XCTAssertEqual(sdk.getVariant("button-color"), "control")
+
+        let assignments = UserDefaults.standard.dictionary(forKey: "MGM_localExperimentAssignments") as? [String: String]
+        XCTAssertEqual(
+            assignments?[buttonColorExperiment.id],
+            "control",
+            "Assignment should be persisted keyed by the experiment UUID"
+        )
+    }
+
+    func testPersistedAssignmentIsReusedAcrossRelaunchEvenIfUserChanged() {
+        // First launch as user_123 -> "control" (golden vector)
+        UserDefaults.standard.set("user_123", forKey: "MGM_userId")
+        let sdk1 = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [buttonColorExperiment]),
+            storage: InMemoryEventStorage(),
+            networkClient: ExperimentsMockNetworkClient(),
+            skipExperimentsLoad: false
+        )
+        XCTAssertEqual(sdk1.getVariant("button-color"), "control")
+
+        // Relaunch as a user that would bucket into "treatment"
+        // ($anon_abc123def456 -> "treatment" per golden vector); the persisted
+        // assignment must win.
+        UserDefaults.standard.set("$anon_abc123def456", forKey: "MGM_userId")
+        let sdk2 = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [buttonColorExperiment]),
+            storage: InMemoryEventStorage(),
+            networkClient: ExperimentsMockNetworkClient(),
+            skipExperimentsLoad: false
+        )
+        XCTAssertEqual(sdk2.getVariant("button-color"), "control", "Persisted assignment must be reused across relaunches")
+    }
+
+    // MARK: - Exposure Events
+
+    func testExposureTrackedWithRawExperimentName() {
+        UserDefaults.standard.set("user_123", forKey: "MGM_userId")
+
+        let storage = InMemoryEventStorage()
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [buttonColorExperiment]),
+            storage: storage,
+            networkClient: ExperimentsMockNetworkClient(),
+            skipExperimentsLoad: false
+        )
+
+        XCTAssertEqual(sdk.getVariant("button-color"), "control")
+        waitBriefly(0.2)
+
+        let exposures = exposureEvents(in: storage)
+        XCTAssertEqual(exposures.count, 1, "Exactly one $experiment_exposure event should be tracked")
+        XCTAssertEqual(exposures.first?.properties?["$experiment_name"]?.value as? String, "button-color")
+        XCTAssertEqual(exposures.first?.properties?["$variant"]?.value as? String, "control")
+    }
+
+    func testExposureDedupedAcrossRepeatedGetVariantCalls() {
+        UserDefaults.standard.set("user_123", forKey: "MGM_userId")
+
+        let storage = InMemoryEventStorage()
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [buttonColorExperiment]),
+            storage: storage,
+            networkClient: ExperimentsMockNetworkClient(),
+            skipExperimentsLoad: false
+        )
+
+        _ = sdk.getVariant("button-color")
+        _ = sdk.getVariant("button-color")
+        _ = sdk.getVariant("button-color")
+        waitBriefly(0.2)
+
+        XCTAssertEqual(exposureEvents(in: storage).count, 1, "Repeated getVariant calls must not re-fire exposure")
+    }
+
+    func testGetVariantSetsSuperPropertyInLocalMode() {
+        UserDefaults.standard.set("user_123", forKey: "MGM_userId")
+
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [buttonColorExperiment]),
+            storage: InMemoryEventStorage(),
+            networkClient: ExperimentsMockNetworkClient(),
+            skipExperimentsLoad: false
+        )
+
+        _ = sdk.getVariant("button-color")
+
+        let superProperties = sdk.getSuperProperties()
+        XCTAssertEqual(superProperties["$experiment_button_color"] as? String, "control")
+    }
+
+    // MARK: - Privacy Interplay (Forget-Me / Opt-Out)
+
+    /// Golden-vector experiment: "user_123" -> "c", "chris@nihongo.example" -> "b"
+    private var onboardingFlowExperiment: MGMExperimentConfig {
+        MGMExperimentConfig(
+            id: "3f9c2d11-8b7a-4e5f-a0c6-91d2e3f4a5b6",
+            name: "onboarding-flow",
+            variants: ["a", "b", "c"]
+        )
+    }
+
+    func testForgetMeResetClearsLocalAssignmentsAndRebucketsUnderNewAnonymousId() {
+        UserDefaults.standard.set("user_123", forKey: "MGM_userId")
+
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [onboardingFlowExperiment]),
+            storage: InMemoryEventStorage(),
+            networkClient: ExperimentsMockNetworkClient(),
+            skipExperimentsLoad: false
+        )
+        XCTAssertEqual(sdk.getVariant("onboarding-flow"), "c", "Golden vector for user_123")
+
+        sdk.reset(clearAnonymousId: true)
+
+        XCTAssertNil(
+            UserDefaults.standard.dictionary(forKey: "MGM_localExperimentAssignments"),
+            "Forget-me must clear persisted local experiment assignments"
+        )
+
+        // The next getVariant must re-bucket fresh under the rotated anonymous ID
+        // (deterministic for whatever new ID was generated).
+        let expectedForRotatedId = MGMLocalBucketing.variant(
+            experimentId: onboardingFlowExperiment.id,
+            userId: sdk.anonymousId,
+            variants: onboardingFlowExperiment.variants
+        )
+        XCTAssertEqual(
+            sdk.getVariant("onboarding-flow"),
+            expectedForRotatedId,
+            "After forget-me the variant must be re-bucketed from the new anonymous ID"
+        )
+    }
+
+    func testForgetMeRebucketedAssignmentCanChangeUnderNewIdentity() {
+        UserDefaults.standard.set("user_123", forKey: "MGM_userId")
+
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [onboardingFlowExperiment]),
+            storage: InMemoryEventStorage(),
+            networkClient: ExperimentsMockNetworkClient(),
+            skipExperimentsLoad: false
+        )
+        XCTAssertEqual(sdk.getVariant("onboarding-flow"), "c", "Golden vector for user_123")
+
+        // Forget-me, then a new identity that hashes into a different variant
+        // (golden vector: chris@nihongo.example -> "b").
+        sdk.reset(clearAnonymousId: true)
+        sdk.identify(userId: "chris@nihongo.example")
+        waitBriefly(0.2)
+
+        XCTAssertEqual(
+            sdk.getVariant("onboarding-flow"),
+            "b",
+            "Re-bucketing under the new identity must produce that identity's variant, not the pre-reset one"
+        )
+    }
+
+    func testPlainResetKeepsLocalAssignments() {
+        UserDefaults.standard.set("user_123", forKey: "MGM_userId")
+
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [buttonColorExperiment]),
+            storage: InMemoryEventStorage(),
+            networkClient: ExperimentsMockNetworkClient(),
+            skipExperimentsLoad: false
+        )
+        XCTAssertEqual(sdk.getVariant("button-color"), "control")
+
+        // Plain reset (no clearAnonymousId) matches server-mode stickiness
+        sdk.reset()
+
+        let assignments = UserDefaults.standard.dictionary(forKey: "MGM_localExperimentAssignments") as? [String: String]
+        XCTAssertEqual(
+            assignments?[buttonColorExperiment.id],
+            "control",
+            "Plain reset() must keep sticky local assignments"
+        )
+        XCTAssertEqual(sdk.getVariant("button-color"), "control", "Sticky assignment must survive a plain reset")
+    }
+
+    func testOptedOutLocalModePerformsNoConfigFetch() {
+        let mockNetwork = ExperimentsMockNetworkClient(
+            experimentConfigsResult: .success([buttonColorExperiment])
+        )
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(optedOutByDefault: true),
+            storage: InMemoryEventStorage(),
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+        waitBriefly()
+
+        XCTAssertTrue(sdk.isOptedOut)
+        XCTAssertEqual(mockNetwork.fetchExperimentConfigsCallCount, 0, "Opted-out local mode must not fetch experiment configs")
+        XCTAssertEqual(mockNetwork.fetchExperimentsCallCount, 0, "Opted-out local mode must not call the server-assignment endpoint")
+    }
+
+    func testOptedOutLocalModeBucketsFromInlineConfigsWithoutExposures() {
+        UserDefaults.standard.set("user_123", forKey: "MGM_userId")
+
+        let storage = InMemoryEventStorage()
+        let mockNetwork = ExperimentsMockNetworkClient()
+        let sdk = MostlyGoodMetrics(
+            configuration: makeLocalConfig(localExperiments: [buttonColorExperiment], optedOutByDefault: true),
+            storage: storage,
+            networkClient: mockNetwork,
+            skipExperimentsLoad: false
+        )
+
+        // Bucketing still works from inline configs while opted out
+        XCTAssertEqual(sdk.getVariant("button-color"), "control")
+        XCTAssertEqual(mockNetwork.fetchExperimentConfigsCallCount, 0, "Inline configs while opted out must not fetch")
+        waitBriefly(0.2)
+
+        // ...but no exposure is tracked and no dedup state is recorded
+        XCTAssertEqual(exposureEvents(in: storage).count, 0, "No $experiment_exposure while opted out")
+        XCTAssertNil(
+            UserDefaults.standard.stringArray(forKey: "MGM_experimentExposures"),
+            "No exposure dedup state should be recorded while opted out"
+        )
+
+        // After opting in, the exposure can still fire
+        sdk.optIn()
+        XCTAssertEqual(sdk.getVariant("button-color"), "control")
+        waitBriefly(0.2)
+        XCTAssertEqual(exposureEvents(in: storage).count, 1, "Exposure should fire on the first getVariant after opt-in")
     }
 }
 

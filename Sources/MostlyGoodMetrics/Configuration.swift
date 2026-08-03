@@ -38,6 +38,16 @@ public struct MGMConfiguration {
     /// Used by hybrid framework SDKs to identify their version
     public var wrapperVersion: String?
 
+    /// How experiment variants are assigned (default: .server)
+    /// - `.server`: assignments are fetched from `GET /v1/experiments`
+    /// - `.local`: assignments are computed on device from experiment configs
+    public var experimentMode: MGMExperimentMode
+
+    /// Inline experiment configs for `.local` experiment mode.
+    /// When non-empty, the SDK uses these directly and performs no experiments
+    /// network request at all. Ignored in `.server` mode.
+    public var localExperiments: [MGMExperimentConfig]
+
     /// Whether the SDK starts opted out of tracking (default: false)
     /// Useful for consent-first apps: no events are collected until `optIn()` is called.
     /// A persisted opt-in/opt-out choice (from `optIn()`/`optOut()`) always takes
@@ -66,6 +76,8 @@ public struct MGMConfiguration {
     ///   - trackAppLifecycleEvents: Whether to auto-track lifecycle events (defaults to true)
     ///   - wrapperName: Optional wrapper SDK name (e.g., "react-native", "flutter")
     ///   - wrapperVersion: Optional wrapper SDK version
+    ///   - experimentMode: How experiment variants are assigned (defaults to .server)
+    ///   - localExperiments: Inline experiment configs for `.local` mode (defaults to none)
     ///   - optedOutByDefault: Whether the SDK starts opted out until `optIn()` is called (defaults to false)
     ///   - collectDeviceProperties: Whether to collect device properties like model, device type, locale, and timezone (defaults to true)
     public init(
@@ -80,6 +92,8 @@ public struct MGMConfiguration {
         trackAppLifecycleEvents: Bool = true,
         wrapperName: String? = nil,
         wrapperVersion: String? = nil,
+        experimentMode: MGMExperimentMode = .server,
+        localExperiments: [MGMExperimentConfig] = [],
         optedOutByDefault: Bool = false,
         collectDeviceProperties: Bool = true
     ) {
@@ -94,6 +108,8 @@ public struct MGMConfiguration {
         self.trackAppLifecycleEvents = trackAppLifecycleEvents
         self.wrapperName = wrapperName
         self.wrapperVersion = wrapperVersion
+        self.experimentMode = experimentMode
+        self.localExperiments = localExperiments
         self.optedOutByDefault = optedOutByDefault
         self.collectDeviceProperties = collectDeviceProperties
     }

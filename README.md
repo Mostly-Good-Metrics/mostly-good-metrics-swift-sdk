@@ -14,6 +14,7 @@ A lightweight Swift SDK for tracking analytics events with [MostlyGoodMetrics](h
 - [User Identification](#user-identification)
 - [Privacy](#privacy)
 - [Configuration Options](#configuration-options)
+- [Local Experiment Enrollment](#local-experiment-enrollment)
 - [Automatic Events](#automatic-events)
 - [Automatic Context](#automatic-context)
 - [Automatic Behavior](#automatic-behavior)
@@ -264,8 +265,53 @@ MostlyGoodMetrics.configure(with: config)
 | `maxStoredEvents` | `10000` | Max cached events |
 | `enableDebugLogging` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
+| `experimentMode` | `.server` | How experiment variants are assigned (`.server` or `.local`) |
+| `localExperiments` | `[]` | Inline experiment configs for `.local` mode (skips the configs fetch) |
 | `optedOutByDefault` | `false` | Start opted out until `optIn()` is called (consent-first apps) |
 | `collectDeviceProperties` | `true` | Collect device model/type, manufacturer, locale, and timezone |
+
+## Local Experiment Enrollment
+
+By default (`experimentMode: .server`), the SDK asks the server which variant each user is assigned to. With `experimentMode: .local`, the SDK instead fetches only the experiment *configurations* (ID, name, and variant list) and buckets the user **on device** using a deterministic hash:
+
+```swift
+let config = MGMConfiguration(
+    apiKey: "mgm_proj_your_api_key",
+    experimentMode: .local
+)
+MostlyGoodMetrics.configure(with: config)
+
+// Same API as server mode
+let variant = MostlyGoodMetrics.getVariant("button-color", fallback: "control")
+```
+
+**How bucketing works:** the bucket is the first 8 bytes of `SHA256("<experiment_uuid>:<user_id>")` (big-endian `UInt64`), and the variant is `variants[bucket % variants.count]`. The user ID is the identified user ID if set, otherwise the anonymous ID. The same algorithm is used across all MostlyGoodMetrics SDKs, so the same user gets the same variant on every platform.
+
+**Sticky assignments:** the first `getVariant()` call for an experiment persists the assignment locally (per experiment UUID) and reuses it from then on. Calling `identify()` later does **not** re-bucket - the anonymous-era variant is kept, matching server behavior. A forget-me `reset(clearAnonymousId: true)` (or `resetAnonymousId()`) clears the persisted assignments so the rotated anonymous ID is re-bucketed fresh; a plain `reset()` / `resetIdentity()` keeps them.
+
+**Opt-out interplay:** while opted out (`optOut()` or `optedOutByDefault`), the SDK performs no experiment config fetch. On-device bucketing still works from inline or previously cached configs, but no `$experiment_exposure` events are recorded (and no exposure dedup state is written, so the exposure can still fire after a later `optIn()`).
+
+**Zero-network option:** provide the experiment configs inline and the SDK performs no experiments network request at all:
+
+```swift
+let config = MGMConfiguration(
+    apiKey: "mgm_proj_your_api_key",
+    experimentMode: .local,
+    localExperiments: [
+        MGMExperimentConfig(
+            id: "7b1e8a90-4c2d-4f6a-9e3b-2a1d5c8f0e71",  // must match the server-side experiment ID
+            name: "button-color",
+            variants: ["control", "treatment"]
+        )
+    ]
+)
+```
+
+**Exposure events** work exactly as in server mode: the first `getVariant()` hit tracks a `$experiment_exposure` event with the experiment name and variant, deduplicated per (user, experiment, variant).
+
+**Privacy benefit:** in local mode the user ID is never sent to the server for experiment assignment - the configs endpoint is called without any user identifier (inline configs send nothing at all).
+
+> **Cross-device caveat:** local bucketing hashes whatever ID the device currently uses and cannot resolve aliases. If a user is anonymous on one device and identified on another (or has different anonymous IDs on two devices), they may receive different variants. Server mode can resolve identity aliases; local mode cannot.
 
 ## Automatic Events
 
