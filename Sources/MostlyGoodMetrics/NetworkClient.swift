@@ -12,6 +12,11 @@ struct ExperimentsResponse: Codable {
     }
 }
 
+/// Response from the experiment configs API (used for local experiment mode)
+struct ExperimentConfigsResponse: Codable {
+    let experiments: [MGMExperimentConfig]
+}
+
 /// Protocol for network operations (allows mocking in tests)
 protocol NetworkClientProtocol {
     func sendEvents(
@@ -24,6 +29,10 @@ protocol NetworkClientProtocol {
         userId: String,
         anonymousId: String?,
         completion: @escaping (Result<[String: String], MGMError>) -> Void
+    )
+
+    func fetchExperimentConfigs(
+        completion: @escaping (Result<[MGMExperimentConfig], MGMError>) -> Void
     )
 }
 
@@ -236,6 +245,82 @@ final class NetworkClient: NetworkClientProtocol {
                     completion(.success(experimentsResponse.assignedVariants))
                 } catch {
                     self.debugLog("Failed to decode experiments response: \(error)")
+                    completion(.failure(.invalidResponse))
+                }
+
+            case 401:
+                self.debugLog("Unauthorized - invalid API key")
+                completion(.failure(.unauthorized))
+
+            case 403:
+                let errorMessage = self.parseErrorMessage(from: data)
+                self.debugLog("Forbidden: \(errorMessage)")
+                completion(.failure(.forbidden(errorMessage)))
+
+            case 429:
+                let retryAfter = self.parseRetryAfter(from: httpResponse)
+                self.debugLog("Rate limited, retry after \(retryAfter) seconds")
+                completion(.failure(.rateLimited(retryAfter: retryAfter)))
+
+            case 500...599:
+                let errorMessage = self.parseErrorMessage(from: data)
+                self.debugLog("Server error: \(errorMessage)")
+                completion(.failure(.serverError(httpResponse.statusCode, errorMessage)))
+
+            default:
+                self.debugLog("Unexpected status code: \(httpResponse.statusCode)")
+                completion(.failure(.unexpectedStatusCode(httpResponse.statusCode)))
+            }
+        }
+
+        task.resume()
+    }
+
+    /// Fetches experiment configurations for local (on-device) variant assignment.
+    /// No user identifier is sent with this request.
+    /// - Parameter completion: Completion handler with result containing experiment configs
+    func fetchExperimentConfigs(
+        completion: @escaping (Result<[MGMExperimentConfig], MGMError>) -> Void
+    ) {
+        let url = configuration.baseURL.appendingPathComponent("v1/experiments/configs")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue(buildUserAgent(), forHTTPHeaderField: "User-Agent")
+
+        if configuration.enableDebugLogging {
+            debugLog("Fetching experiment configs")
+        }
+
+        let task = session.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                self.debugLog("Network error fetching experiment configs: \(error.localizedDescription)")
+                completion(.failure(.networkError(error)))
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                completion(.failure(.invalidResponse))
+                return
+            }
+
+            switch httpResponse.statusCode {
+            case 200:
+                guard let data = data else {
+                    completion(.failure(.invalidResponse))
+                    return
+                }
+
+                do {
+                    let decoder = JSONDecoder()
+                    let configsResponse = try decoder.decode(ExperimentConfigsResponse.self, from: data)
+                    self.debugLog("Received \(configsResponse.experiments.count) experiment configs")
+                    completion(.success(configsResponse.experiments))
+                } catch {
+                    self.debugLog("Failed to decode experiment configs response: \(error)")
                     completion(.failure(.invalidResponse))
                 }
 

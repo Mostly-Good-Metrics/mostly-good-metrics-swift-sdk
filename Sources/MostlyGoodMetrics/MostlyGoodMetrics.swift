@@ -40,11 +40,22 @@ public final class MostlyGoodMetrics {
     private static let experimentsCachedUserIdKey = "MGM_experimentsCachedUserId"
     private static let experimentExposuresKey = "MGM_experimentExposures"
 
+    // Keys for local experiment mode (on-device bucketing)
+    // TODO: When the privacy-controls branch merges, its forget-me reset /
+    // anonymous-ID rotation must also clear localExperimentAssignmentsKey so a
+    // reset user is re-bucketed under their new identity.
+    private static let localExperimentAssignmentsKey = "MGM_localExperimentAssignments"
+    private static let localExperimentConfigsCacheKey = "MGM_localExperimentConfigsCache"
+    private static let localExperimentConfigsFetchedAtKey = "MGM_localExperimentConfigsFetchedAt"
+
     /// Minimum time between background experiment refreshes (stale-while-revalidate throttle)
     private static let experimentsRefreshInterval: TimeInterval = 60 * 60
 
-    /// Assigned experiment variants (keyed by experiment name)
+    /// Assigned experiment variants (keyed by experiment name, `.server` mode)
     private var assignedVariants: [String: String] = [:]
+
+    /// Experiment configs for on-device bucketing (keyed by experiment name, `.local` mode)
+    private var localExperimentConfigs: [String: MGMExperimentConfig] = [:]
 
     /// Whether experiments have been loaded
     private var experimentsLoaded: Bool = false
@@ -401,11 +412,17 @@ public final class MostlyGoodMetrics {
     /// - Returns: The assigned variant, or `fallback` if the experiment doesn't exist
     ///   or experiments haven't loaded
     public func getVariant(_ experimentName: String, fallback: String? = nil) -> String? {
-        experimentsLock.lock()
-        let variant = assignedVariants[experimentName]
-        experimentsLock.unlock()
+        let assignedVariant: String?
+        switch configuration.experimentMode {
+        case .server:
+            experimentsLock.lock()
+            assignedVariant = assignedVariants[experimentName]
+            experimentsLock.unlock()
+        case .local:
+            assignedVariant = localVariant(for: experimentName)
+        }
 
-        guard let variant = variant else {
+        guard let variant = assignedVariant else {
             return fallback
         }
 
@@ -446,12 +463,26 @@ public final class MostlyGoodMetrics {
         debugLog("Tracked $experiment_exposure for '\(experimentName)' variant '\(variant)'")
     }
 
-    /// Loads experiments from cache and/or fetches from server.
+    /// Loads experiments according to the configured `experimentMode`.
+    ///
+    /// - `.server`: loads server-assigned variants from cache and/or the server
+    /// - `.local`: loads experiment configs (inline, cached, or fetched) for
+    ///   on-device bucketing
+    private func loadExperiments() {
+        switch configuration.experimentMode {
+        case .server:
+            loadServerExperiments()
+        case .local:
+            loadLocalExperiments()
+        }
+    }
+
+    /// Loads server-assigned experiments from cache and/or fetches from server.
     ///
     /// Cached assignments never expire (stale-while-revalidate): the cache for the current
     /// user is served immediately, and a background refetch runs if the last successful
     /// fetch was more than `experimentsRefreshInterval` ago.
-    private func loadExperiments() {
+    private func loadServerExperiments() {
         if let cachedVariants = loadCachedExperiments() {
             experimentsLock.lock()
             assignedVariants = cachedVariants
@@ -556,11 +587,177 @@ public final class MostlyGoodMetrics {
         }
     }
 
-    /// Refetches experiments from the server (used after identify).
-    /// Current in-memory assignments keep being served until the new response
-    /// arrives, at which point they are atomically swapped.
+    /// Refetches experiments after identify.
+    ///
+    /// In `.server` mode the server is asked for fresh assignments; current in-memory
+    /// assignments keep being served until the new response arrives, at which point
+    /// they are atomically swapped.
+    ///
+    /// In `.local` mode nothing is refetched: persisted local assignments are sticky
+    /// across `identify()`, which matches server behavior of keeping the
+    /// anonymous-era variant.
     private func refetchExperiments() {
-        fetchExperimentsFromServer()
+        switch configuration.experimentMode {
+        case .server:
+            fetchExperimentsFromServer()
+        case .local:
+            debugLog("Local experiment mode: keeping sticky assignments after identify")
+        }
+    }
+
+    // MARK: - Local Experiment Mode
+
+    /// Loads experiment configs for on-device bucketing.
+    ///
+    /// Inline configs (`MGMConfiguration.localExperiments`) take priority and involve
+    /// no network request at all. Otherwise cached configs are served immediately
+    /// (stale-while-revalidate, same throttle as server mode) and fetched from the
+    /// server when absent or stale.
+    private func loadLocalExperiments() {
+        if !configuration.localExperiments.isEmpty {
+            applyLocalExperimentConfigs(configuration.localExperiments)
+            debugLog("Loaded \(configuration.localExperiments.count) inline local experiment configs")
+            return
+        }
+
+        if let cachedConfigs = loadCachedExperimentConfigs() {
+            applyLocalExperimentConfigs(cachedConfigs)
+            debugLog("Loaded \(cachedConfigs.count) experiment configs from cache")
+
+            // Background revalidation, throttled to once per refresh interval
+            let lastFetchedAt = UserDefaults.standard.object(forKey: Self.localExperimentConfigsFetchedAtKey) as? Date
+            if lastFetchedAt == nil || Date().timeIntervalSince(lastFetchedAt!) >= Self.experimentsRefreshInterval {
+                fetchExperimentConfigsFromServer()
+            }
+            return
+        }
+
+        // No inline configs and no cache - fetch from server
+        fetchExperimentConfigsFromServer()
+    }
+
+    /// Atomically swaps in the given experiment configs, marks experiments as loaded,
+    /// and resolves all `ready()` waiters.
+    private func applyLocalExperimentConfigs(_ configs: [MGMExperimentConfig]) {
+        let configsByName = Dictionary(configs.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+
+        experimentsLock.lock()
+        localExperimentConfigs = configsByName
+        experimentsLoaded = true
+        let waiters = experimentsWaiters
+        experimentsWaiters.removeAll()
+        experimentsLock.unlock()
+
+        waiters.forEach { $0.resume() }
+    }
+
+    /// Fetches experiment configs from the server for local mode.
+    ///
+    /// On success, the in-memory configs are atomically swapped (unless a newer fetch
+    /// has been started since). On failure, current configs keep being served.
+    /// All `ready()` waiters are resolved in both cases. No user identifier is sent.
+    private func fetchExperimentConfigsFromServer() {
+        experimentsLock.lock()
+        experimentsFetchGeneration += 1
+        let generation = experimentsFetchGeneration
+        experimentsLock.unlock()
+
+        networkClient.fetchExperimentConfigs { [weak self] result in
+            guard let self = self else { return }
+
+            switch result {
+            case .success(let configs):
+                self.experimentsLock.lock()
+                let isLatestFetch = generation == self.experimentsFetchGeneration
+                if isLatestFetch {
+                    self.localExperimentConfigs = Dictionary(
+                        configs.map { ($0.name, $0) },
+                        uniquingKeysWith: { first, _ in first }
+                    )
+                }
+                self.experimentsLoaded = true
+                let waiters = self.experimentsWaiters
+                self.experimentsWaiters.removeAll()
+                self.experimentsLock.unlock()
+
+                if isLatestFetch {
+                    self.cacheExperimentConfigs(configs)
+                    self.debugLog("Fetched \(configs.count) experiment configs")
+                } else {
+                    self.debugLog("Ignored stale experiment configs response")
+                }
+                waiters.forEach { $0.resume() }
+
+            case .failure(let error):
+                // Mark experiments as loaded even on failure to avoid blocking forever.
+                // Keep serving whatever configs we already have (inline, cache, or previous fetch).
+                self.experimentsLock.lock()
+                self.experimentsLoaded = true
+                let waiters = self.experimentsWaiters
+                self.experimentsWaiters.removeAll()
+                self.experimentsLock.unlock()
+
+                self.debugLog("Failed to fetch experiment configs: \(error.localizedDescription)")
+                waiters.forEach { $0.resume() }
+            }
+        }
+    }
+
+    /// Loads cached experiment configs, if present.
+    /// The cache never expires; freshness is handled by background revalidation.
+    private func loadCachedExperimentConfigs() -> [MGMExperimentConfig]? {
+        guard let data = UserDefaults.standard.data(forKey: Self.localExperimentConfigsCacheKey),
+              let configs = try? JSONDecoder().decode([MGMExperimentConfig].self, from: data) else {
+            return nil
+        }
+        return configs
+    }
+
+    /// Caches experiment configs to UserDefaults
+    /// - Parameter configs: The configs to cache
+    private func cacheExperimentConfigs(_ configs: [MGMExperimentConfig]) {
+        let defaults = UserDefaults.standard
+
+        if let data = try? JSONEncoder().encode(configs) {
+            defaults.set(data, forKey: Self.localExperimentConfigsCacheKey)
+            defaults.set(Date(), forKey: Self.localExperimentConfigsFetchedAtKey)
+            debugLog("Cached \(configs.count) experiment configs")
+        }
+    }
+
+    /// Resolves the variant for an experiment in `.local` mode.
+    ///
+    /// The first resolution for an experiment buckets on device
+    /// (`MGMLocalBucketing`) using the effective user ID and persists the
+    /// assignment per experiment UUID. Later calls - including after `identify()` -
+    /// reuse the persisted assignment, so an anonymous-era variant sticks (matching
+    /// server behavior).
+    private func localVariant(for experimentName: String) -> String? {
+        experimentsLock.lock()
+        defer { experimentsLock.unlock() }
+
+        guard let config = localExperimentConfigs[experimentName] else {
+            return nil
+        }
+
+        let defaults = UserDefaults.standard
+        var assignments = defaults.dictionary(forKey: Self.localExperimentAssignmentsKey) as? [String: String] ?? [:]
+        if let stickyVariant = assignments[config.id] {
+            return stickyVariant
+        }
+
+        guard let variant = MGMLocalBucketing.variant(
+            experimentId: config.id,
+            userId: effectiveUserId,
+            variants: config.variants
+        ) else {
+            return nil
+        }
+
+        assignments[config.id] = variant
+        defaults.set(assignments, forKey: Self.localExperimentAssignmentsKey)
+        debugLog("Locally bucketed '\(experimentName)' (\(config.id)) into variant '\(variant)'")
+        return variant
     }
 
     /// Starts a new session with a fresh session ID

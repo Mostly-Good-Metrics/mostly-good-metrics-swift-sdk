@@ -38,6 +38,16 @@ public struct MGMConfiguration {
     /// Used by hybrid framework SDKs to identify their version
     public var wrapperVersion: String?
 
+    /// How experiment variants are assigned (default: .server)
+    /// - `.server`: assignments are fetched from `GET /v1/experiments`
+    /// - `.local`: assignments are computed on device from experiment configs
+    public var experimentMode: MGMExperimentMode
+
+    /// Inline experiment configs for `.local` experiment mode.
+    /// When non-empty, the SDK uses these directly and performs no experiments
+    /// network request at all. Ignored in `.server` mode.
+    public var localExperiments: [MGMExperimentConfig]
+
     /// Default API base URL
     public static let defaultBaseURL = URL(string: "https://ingest.mostlygoodmetrics.com")!
 
@@ -54,6 +64,8 @@ public struct MGMConfiguration {
     ///   - trackAppLifecycleEvents: Whether to auto-track lifecycle events (defaults to true)
     ///   - wrapperName: Optional wrapper SDK name (e.g., "react-native", "flutter")
     ///   - wrapperVersion: Optional wrapper SDK version
+    ///   - experimentMode: How experiment variants are assigned (defaults to .server)
+    ///   - localExperiments: Inline experiment configs for `.local` mode (defaults to none)
     public init(
         apiKey: String,
         baseURL: URL = MGMConfiguration.defaultBaseURL,
@@ -65,7 +77,9 @@ public struct MGMConfiguration {
         enableDebugLogging: Bool = false,
         trackAppLifecycleEvents: Bool = true,
         wrapperName: String? = nil,
-        wrapperVersion: String? = nil
+        wrapperVersion: String? = nil,
+        experimentMode: MGMExperimentMode = .server,
+        localExperiments: [MGMExperimentConfig] = []
     ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
@@ -78,5 +92,7 @@ public struct MGMConfiguration {
         self.trackAppLifecycleEvents = trackAppLifecycleEvents
         self.wrapperName = wrapperName
         self.wrapperVersion = wrapperVersion
+        self.experimentMode = experimentMode
+        self.localExperiments = localExperiments
     }
 }
