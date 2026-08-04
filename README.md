@@ -2,6 +2,8 @@
 
 A lightweight Swift SDK for tracking analytics events with [MostlyGoodMetrics](https://mostlygoodmetrics.com).
 
+Documentation: [docs.mostlygoodmetrics.com](https://docs.mostlygoodmetrics.com)
+
 ## Table of Contents
 
 - [Requirements](#requirements)
@@ -38,7 +40,7 @@ Add the following to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Mostly-Good-Metrics/mostly-good-metrics-swift-sdk", from: "1.0.0")
+    .package(url: "https://github.com/Mostly-Good-Metrics/mostly-good-metrics-swift-sdk", from: "0.7.0")
 ]
 ```
 
@@ -49,7 +51,7 @@ Or in Xcode: **File > Add Package Dependencies** and enter the repository URL.
 Add to your `Podfile`:
 
 ```ruby
-pod 'MostlyGoodMetrics', '~> 0.6.1'
+pod 'MostlyGoodMetrics', '~> 0.7.0'
 ```
 
 Then run:
