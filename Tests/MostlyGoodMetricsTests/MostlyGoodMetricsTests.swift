@@ -699,6 +699,64 @@ final class MostlyGoodMetricsTests: XCTestCase {
         waitForExpectations(timeout: 1)
     }
 
+    func testIdentifyEventIncludesAnonymousId() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        // Clear any previous identify state
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyHash")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyTimestamp")
+
+        // Capture the anonymous id used for events before identify()
+        let anonymousIdBeforeIdentify = client.anonymousId
+
+        let profile = UserProfile(email: "test@example.com")
+        client.identify(userId: "identified_user", profile: profile)
+
+        let expectation = self.expectation(description: "Identify includes anonymous id")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 10)
+            let identifyEvent = events.first { $0.name == "$identify" }
+            XCTAssertNotNil(identifyEvent, "Should send $identify event")
+            XCTAssertEqual(identifyEvent?.userId, "identified_user")
+            XCTAssertEqual(
+                identifyEvent?.properties?["$anonymous_id"]?.value as? String,
+                anonymousIdBeforeIdentify,
+                "$identify event must carry $anonymous_id = the pre-identify anonymous id"
+            )
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testIdentifyEventOmitsAnonymousIdWhenEqualToUserId() {
+        let config = MGMConfiguration(apiKey: "test_key")
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        // Clear any previous identify state
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyHash")
+        UserDefaults.standard.removeObject(forKey: "MGM_identifyTimestamp")
+
+        // Identify with a userId equal to the current anonymous id: nothing to stitch
+        let profile = UserProfile(email: "test@example.com")
+        client.identify(userId: client.anonymousId, profile: profile)
+
+        let expectation = self.expectation(description: "Identify omits redundant anonymous id")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 10)
+            let identifyEvent = events.first { $0.name == "$identify" }
+            XCTAssertNotNil(identifyEvent, "Should send $identify event")
+            XCTAssertNil(
+                identifyEvent?.properties?["$anonymous_id"],
+                "$anonymous_id must be omitted when it equals the identified user id"
+            )
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
     func testIdentifyWithoutProfileDoesNotSendIdentifyEvent() {
         let config = MGMConfiguration(apiKey: "test_key")
         let storage = InMemoryEventStorage()

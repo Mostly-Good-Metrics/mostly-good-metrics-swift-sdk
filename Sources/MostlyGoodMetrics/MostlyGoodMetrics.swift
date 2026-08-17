@@ -476,6 +476,10 @@ public final class MostlyGoodMetrics {
             if let name = profile.name {
                 properties["name"] = name
             }
+            // Send stored anon id (when distinct) so the backend can stitch pre-identify events.
+            if !anonymousId.isEmpty && anonymousId != userId {
+                properties["$anonymous_id"] = anonymousId
+            }
 
             // Track the $identify event
             track("$identify", properties: properties)
