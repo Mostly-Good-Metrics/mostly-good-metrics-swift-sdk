@@ -1,7 +1,7 @@
 import Foundation
 
 /// SDK version for User-Agent header
-internal let sdkVersion = "0.7.0"
+internal let sdkVersion = "0.9.0"
 
 /// Response from the experiments API
 struct ExperimentsResponse: Codable {
