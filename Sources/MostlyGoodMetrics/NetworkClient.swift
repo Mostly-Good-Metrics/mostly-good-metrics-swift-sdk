@@ -1,6 +1,8 @@
 import Foundation
 
-/// SDK version for User-Agent header
+/// SDK version reported in the User-Agent and X-MGM-SDK-Version headers.
+/// Must match `s.version` in MostlyGoodMetrics.podspec (the release source of truth).
+/// SDKVersionTests guards against drift.
 internal let sdkVersion = "0.9.0"
 
 /// Response from the experiments API
