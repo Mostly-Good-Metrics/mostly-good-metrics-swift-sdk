@@ -77,7 +77,15 @@ internal enum MGMPlatformInfo {
         #elseif canImport(UIKit)
         return UIDevice.current.systemVersion
         #else
-        return ProcessInfo.processInfo.operatingSystemVersionString
+        // Native macOS (AppKit). `operatingSystemVersionString` is Apple's
+        // localized, human-readable string (e.g. "Version 26.5.2 (Build 25F84)",
+        // or non-English equivalents), which splinters one macOS version into a
+        // different `os_version` bucket per device locale. Compose a clean numeric
+        // version to match the iOS format.
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        return v.patchVersion == 0
+            ? "\(v.majorVersion).\(v.minorVersion)"
+            : "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
         #endif
     }
 
