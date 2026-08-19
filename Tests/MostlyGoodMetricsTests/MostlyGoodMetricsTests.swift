@@ -21,6 +21,21 @@ final class MostlyGoodMetricsTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "MGM_optedOut")
     }
 
+    // MARK: - Platform Info Tests
+
+    // Regression for MGM-200: macOS must report a clean numeric os_version, not
+    // Apple's localized `operatingSystemVersionString` (e.g. "Version 26.5.2
+    // (Build 25F84)" or "バージョン26.5.2（ビルド25F84）"). This test runs on the
+    // native-macOS branch and would fail on the old localized string.
+    func testOSVersionIsCleanNumeric() {
+        let osVersion = MGMPlatformInfo.osVersion
+        let pattern = "^[0-9]+(\\.[0-9]+){1,2}$"
+        XCTAssertNotNil(
+            osVersion.range(of: pattern, options: .regularExpression),
+            "os_version must be a numeric dotted version (no locale text/build), got: \(osVersion)"
+        )
+    }
+
     // MARK: - Configuration Tests
 
     func testConfigurationDefaults() {
