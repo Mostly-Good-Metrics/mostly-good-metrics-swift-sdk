@@ -35,6 +35,17 @@ public final class MostlyGoodMetrics {
     private static let identifyTimestampKey = "MGM_identifyTimestamp"
     private static let optedOutKey = "MGM_optedOut"
 
+    /// Event names emitted internally by the SDK. Their `$`-prefixed properties
+    /// are valid MGM system metadata and should not trigger developer warnings.
+    private static let systemEventNames: Set<String> = [
+        "$app_backgrounded",
+        "$app_installed",
+        "$app_opened",
+        "$app_updated",
+        "$experiment_exposure",
+        "$identify"
+    ]
+
     // Keys for experiments cache
     private static let experimentsCacheKey = "MGM_experimentsCache"
     private static let experimentsFetchedAtKey = "MGM_experimentsFetchedAt"
@@ -276,13 +287,24 @@ public final class MostlyGoodMetrics {
         }
 
         guard validateEventName(name) else {
+            debugValidationWarning("Invalid event name '\(name)'. Event names must start with a letter (or '$' for MGM system events), contain only letters, numbers, spaces, or underscores, and be at most 255 characters.")
             debugLog("Invalid event name: \(name)")
             return
         }
 
-        // Merge properties: super properties < user properties < system properties
-        // User properties override super properties, system properties are always added
+        if !Self.systemEventNames.contains(name) {
+            validateCustomPropertyKeys(properties)
+        }
+
+        // Merge properties: persisted super properties < dynamic context < event
+        // properties < system properties. System properties are always SDK-owned.
         var mergedProperties = getSuperProperties()
+        if let contextProperties = configuration.contextProvider?() {
+            for (key, value) in contextProperties {
+                mergedProperties[key] = value
+            }
+            validateCustomPropertyKeys(contextProperties)
+        }
         if let userProps = properties {
             for (key, value) in userProps {
                 mergedProperties[key] = value
@@ -1201,9 +1223,19 @@ public final class MostlyGoodMetrics {
         let lastOpenedVersion = defaults.string(forKey: Self.lastOpenedVersionKey)
 
         if installedVersion == nil {
-            // First install ever
+            // First MGM launch. Existing installations use this to establish a
+            // baseline without backfilling a false $app_installed event.
             defaults.set(currentVersion, forKey: Self.installedVersionKey)
             defaults.set(currentVersion, forKey: Self.lastOpenedVersionKey)
+
+            if Self.shouldSuppressInitialInstall(
+                installedVersion: installedVersion,
+                existingInstallation: configuration.existingInstallation
+            ) {
+                debugLog("Seeded lifecycle state for an existing installation at version \(currentVersion)")
+                return
+            }
+
             track("$app_installed", properties: ["$version": currentVersion])
             debugLog("Tracked $app_installed for version \(currentVersion)")
         } else if lastOpenedVersion != currentVersion {
@@ -1217,12 +1249,39 @@ public final class MostlyGoodMetrics {
         }
     }
 
+    /// Determines whether the first MGM launch should establish lifecycle state
+    /// without emitting `$app_installed`. Kept internal so the migration contract
+    /// can be regression-tested without depending on an app bundle's version.
+    internal static func shouldSuppressInitialInstall(
+        installedVersion: String?,
+        existingInstallation: Bool
+    ) -> Bool {
+        installedVersion == nil && existingInstallation
+    }
+
     private func validateEventName(_ name: String) -> Bool {
         guard !name.isEmpty, name.count <= 255 else { return false }
 
         // Allow $ prefix for system events, otherwise must start with letter
         let pattern = "^\\$?[a-zA-Z][a-zA-Z0-9_]*(?: [a-zA-Z0-9_]+)*$"
         return name.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// In DEBUG builds, surface likely instrumentation mistakes at capture time.
+    /// A `$` prefix is owned by MGM for system events and properties; those values
+    /// may be overwritten by the SDK as part of normal event enrichment.
+    private func validateCustomPropertyKeys(_ properties: [String: Any]?) {
+        guard let properties else { return }
+
+        for key in properties.keys where key.hasPrefix("$") {
+            debugValidationWarning("Property key '\(key)' is reserved for MGM system properties. Rename it to a custom key to avoid collisions.")
+        }
+    }
+
+    private func debugValidationWarning(_ message: String) {
+        #if DEBUG
+        print("[MostlyGoodMetrics] DEBUG validation: \(message)")
+        #endif
     }
 
     private var currentPlatform: String {

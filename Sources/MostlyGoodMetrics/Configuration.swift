@@ -30,6 +30,21 @@ public struct MGMConfiguration {
     /// Tracks: app_installed, app_updated, app_opened, app_backgrounded
     public var trackAppLifecycleEvents: Bool
 
+    /// Whether this is an existing installation migrating to MGM (default: false).
+    ///
+    /// When true, the SDK records the current version as its lifecycle baseline on
+    /// the first MGM launch without emitting `$app_installed`. Later version changes
+    /// still emit `$app_updated` normally.
+    public var existingInstallation: Bool
+
+    /// Dynamic properties evaluated each time an event is captured.
+    ///
+    /// Merge precedence is: persisted super properties < context provider < event
+    /// properties < SDK-owned system properties. Use this for values such as the
+    /// current screen, subscription state, or active organization that can change
+    /// during a session.
+    public var contextProvider: (() -> [String: Any])?
+
     /// The wrapper SDK name (e.g., "react-native", "flutter", "expo")
     /// Used by hybrid framework SDKs to identify themselves
     public var wrapperName: String?
@@ -74,6 +89,8 @@ public struct MGMConfiguration {
     ///   - maxStoredEvents: Maximum cached events (defaults to 10000)
     ///   - enableDebugLogging: Whether to enable debug logging (defaults to false)
     ///   - trackAppLifecycleEvents: Whether to auto-track lifecycle events (defaults to true)
+    ///   - existingInstallation: Whether this install existed before MGM was added (defaults to false)
+    ///   - contextProvider: Dynamic properties evaluated when each event is tracked
     ///   - wrapperName: Optional wrapper SDK name (e.g., "react-native", "flutter")
     ///   - wrapperVersion: Optional wrapper SDK version
     ///   - experimentMode: How experiment variants are assigned (defaults to .server)
@@ -90,6 +107,8 @@ public struct MGMConfiguration {
         maxStoredEvents: Int = 10000,
         enableDebugLogging: Bool = false,
         trackAppLifecycleEvents: Bool = true,
+        existingInstallation: Bool = false,
+        contextProvider: (() -> [String: Any])? = nil,
         wrapperName: String? = nil,
         wrapperVersion: String? = nil,
         experimentMode: MGMExperimentMode = .server,
@@ -106,6 +125,8 @@ public struct MGMConfiguration {
         self.maxStoredEvents = max(100, maxStoredEvents)
         self.enableDebugLogging = enableDebugLogging
         self.trackAppLifecycleEvents = trackAppLifecycleEvents
+        self.existingInstallation = existingInstallation
+        self.contextProvider = contextProvider
         self.wrapperName = wrapperName
         self.wrapperVersion = wrapperVersion
         self.experimentMode = experimentMode

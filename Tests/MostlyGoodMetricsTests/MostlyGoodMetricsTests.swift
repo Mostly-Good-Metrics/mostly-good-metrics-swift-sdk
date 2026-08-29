@@ -50,6 +50,8 @@ final class MostlyGoodMetricsTests: XCTestCase {
         XCTAssertEqual(config.maxStoredEvents, 10000)
         XCTAssertFalse(config.enableDebugLogging)
         XCTAssertTrue(config.trackAppLifecycleEvents)
+        XCTAssertFalse(config.existingInstallation)
+        XCTAssertNil(config.contextProvider)
     }
 
     func testConfigurationCustomValues() {
@@ -63,7 +65,9 @@ final class MostlyGoodMetricsTests: XCTestCase {
             flushInterval: 60,
             maxStoredEvents: 5000,
             enableDebugLogging: true,
-            trackAppLifecycleEvents: false
+            trackAppLifecycleEvents: false,
+            existingInstallation: true,
+            contextProvider: { ["organization_id": "org_123"] }
         )
 
         XCTAssertEqual(config.apiKey, "custom_key")
@@ -75,6 +79,8 @@ final class MostlyGoodMetricsTests: XCTestCase {
         XCTAssertEqual(config.maxStoredEvents, 5000)
         XCTAssertTrue(config.enableDebugLogging)
         XCTAssertFalse(config.trackAppLifecycleEvents)
+        XCTAssertTrue(config.existingInstallation)
+        XCTAssertEqual(config.contextProvider?()["organization_id"] as? String, "org_123")
     }
 
     func testMaxBatchSizeClamping() {
@@ -1239,6 +1245,56 @@ final class MostlyGoodMetricsTests: XCTestCase {
             expectation.fulfill()
         }
         waitForExpectations(timeout: 1)
+    }
+
+    func testContextProviderIsEvaluatedPerEventAndHasDocumentedPrecedence() {
+        var activePlan = "context"
+        let config = MGMConfiguration(
+            apiKey: "test_key",
+            contextProvider: { ["plan": activePlan, "organization_id": "org_123", "$sdk": "custom"] }
+        )
+        let storage = InMemoryEventStorage()
+        let client = MostlyGoodMetrics(configuration: config, storage: storage)
+
+        client.setSuperProperty("plan", value: "super")
+        client.track("first_event", properties: ["plan": "event"])
+        activePlan = "context_updated"
+        client.track("second_event")
+
+        let expectation = self.expectation(description: "Dynamic context is merged per event")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let events = storage.fetchEvents(limit: 10)
+            let first = events.first(where: { $0.name == "first_event" })?.properties
+            let second = events.first(where: { $0.name == "second_event" })?.properties
+
+            XCTAssertEqual(first?["plan"]?.value as? String, "event")
+            XCTAssertEqual(second?["plan"]?.value as? String, "context_updated")
+            XCTAssertEqual(second?["organization_id"]?.value as? String, "org_123")
+            XCTAssertEqual(second?["$sdk"]?.value as? String, "swift")
+            expectation.fulfill()
+        }
+        waitForExpectations(timeout: 1)
+    }
+
+    func testExistingInstallationSuppressesOnlyTheInitialInstallEvent() {
+        XCTAssertTrue(
+            MostlyGoodMetrics.shouldSuppressInitialInstall(
+                installedVersion: nil,
+                existingInstallation: true
+            )
+        )
+        XCTAssertFalse(
+            MostlyGoodMetrics.shouldSuppressInitialInstall(
+                installedVersion: nil,
+                existingInstallation: false
+            )
+        )
+        XCTAssertFalse(
+            MostlyGoodMetrics.shouldSuppressInitialInstall(
+                installedVersion: "1.0.0",
+                existingInstallation: true
+            )
+        )
     }
 
     func testSuperPropertiesPersistAcrossInstances() {
