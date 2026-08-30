@@ -16,6 +16,7 @@ Documentation: [docs.mostlygoodmetrics.com](https://docs.mostlygoodmetrics.com)
 - [User Identification](#user-identification)
 - [Privacy](#privacy)
 - [Configuration Options](#configuration-options)
+- [Migrating an Existing App](#migrating-an-existing-app)
 - [Local Experiment Enrollment](#local-experiment-enrollment)
 - [Automatic Events](#automatic-events)
 - [Automatic Context](#automatic-context)
@@ -267,10 +268,35 @@ MostlyGoodMetrics.configure(with: config)
 | `maxStoredEvents` | `10000` | Max cached events |
 | `enableDebugLogging` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
+| `existingInstallation` | `false` | Establish lifecycle state without emitting a migration-time `$app_installed` |
+| `contextProvider` | `nil` | Dynamic properties evaluated when each event is captured |
 | `experimentMode` | `.server` | How experiment variants are assigned (`.server` or `.local`) |
 | `localExperiments` | `[]` | Inline experiment configs for `.local` mode (skips the configs fetch) |
 | `optedOutByDefault` | `false` | Start opted out until `optIn()` is called (consent-first apps) |
 | `collectDeviceProperties` | `true` | Collect device model/type, manufacturer, locale, and timezone |
+
+## Migrating an Existing App
+
+When moving an already-shipped app from another analytics provider, derive
+`existingInstallation` from that provider's persisted installation marker. This
+prevents the first launch after adding MGM from being counted as a fresh
+`$app_installed` event without suppressing genuine new installs:
+
+```swift
+let config = MGMConfiguration(
+    apiKey: "mgm_proj_your_api_key",
+    existingInstallation: legacyAnalytics.hasInstallationMarker()
+)
+MostlyGoodMetrics.configure(with: config)
+```
+
+On that first MGM launch, the SDK records the current app version as its lifecycle
+baseline and does not emit `$app_installed`. Future version changes emit
+`$app_updated` normally. Do not set `existingInstallation: true` for every
+user: retire the legacy marker only after the migration window has passed.
+
+If you prefer not to track any lifecycle events, use
+`trackAppLifecycleEvents: false`.
 
 ## Local Experiment Enrollment
 
@@ -458,6 +484,29 @@ MostlyGoodMetrics.track("checkout", properties: [
 - String values: truncated to 1000 characters
 - Nesting depth: max 3 levels
 - Total properties size: max 10KB
+
+### Dynamic Global Properties
+
+Use `contextProvider` for properties that can change while the app is running,
+such as the active workspace, subscription state, or current screen. The closure
+is evaluated for every event and its values are never persisted:
+
+```swift
+let config = MGMConfiguration(
+    apiKey: "mgm_proj_your_api_key",
+    contextProvider: {
+        [
+            "organization_id": Session.shared.organizationId,
+            "subscription_tier": Session.shared.subscriptionTier
+        ]
+    }
+)
+```
+
+Collision precedence is explicit: persisted super properties < dynamic context <
+event properties < MGM system properties. MGM-owned `$` keys are reserved and
+always win. In DEBUG builds, the SDK prints a validation warning for invalid event
+names and custom property keys that begin with `$`.
 
 ## Manual Flush
 
