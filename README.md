@@ -169,6 +169,12 @@ The SDK is designed to be privacy-friendly by default:
 - **No location, contacts, or other sensitive data** — nothing beyond what's listed below is ever collected
 - **`identify()` is optional** — without it, users are tracked with a random, app-scoped anonymous ID (`$anon_...`) that is not derived from the device or any external identity
 
+### Apple Privacy Manifest
+
+The Swift Package and CocoaPods target bundle `PrivacyInfo.xcprivacy`. It declares the SDK's use of app-only UserDefaults, analytics events and identifiers, optional name and email supplied to `identify()`, device and app context, and experiment data. The SDK does not use data for cross-app tracking.
+
+Your app still needs to declare its complete data collection in its App Store Connect privacy label, including this SDK's data and any additional values it passes to `track()`, `identify()`, super properties, or `contextProvider`. Review the combined app and SDK privacy report before submission.
+
 ### What's Auto-Collected
 
 Every event includes the fields documented in [Automatic Context](#automatic-context): the user ID (or random anonymous ID), a per-launch session ID, platform, OS version, app version/build, environment, device type/model, device manufacturer, locale, and timezone. Nothing else is collected automatically.
