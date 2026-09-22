@@ -21,7 +21,8 @@ let package = Package(
         .target(
             name: "MostlyGoodMetrics",
             dependencies: [],
-            path: "Sources/MostlyGoodMetrics"
+            path: "Sources/MostlyGoodMetrics",
+            resources: [.copy("PrivacyInfo.xcprivacy")]
         ),
         .testTarget(
             name: "MostlyGoodMetricsTests",

@@ -21,6 +21,7 @@ Pod::Spec.new do |s|
   s.swift_version = '5.9'
 
   s.source_files = 'Sources/MostlyGoodMetrics/**/*.swift'
+  s.resource_bundles = { 'MostlyGoodMetricsPrivacy' => ['Sources/MostlyGoodMetrics/PrivacyInfo.xcprivacy'] }
 
   s.frameworks = 'Foundation'
   s.ios.frameworks = 'UIKit'

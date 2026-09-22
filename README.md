@@ -166,12 +166,20 @@ This clears the persisted user ID and resets to anonymous tracking. Events will 
 The SDK is designed to be privacy-friendly by default:
 
 - **No IDFA or advertising identifiers** — the SDK never reads the IDFA and never triggers an App Tracking Transparency prompt
-- **No location, contacts, or other sensitive data** — nothing beyond what's listed below is ever collected
+- **No precise location or contacts** — MGM derives coarse location from the request IP at ingestion by default, as described below
 - **`identify()` is optional** — without it, users are tracked with a random, app-scoped anonymous ID (`$anon_...`) that is not derived from the device or any external identity
+
+### Apple Privacy Manifest
+
+The Swift Package and CocoaPods target bundle `PrivacyInfo.xcprivacy`. It declares the SDK's use of app-only UserDefaults, analytics events and identifiers, optional name and email supplied to `identify()`, device and app context, experiment data, and coarse location derived by MGM from the request IP at ingestion. The SDK does not use data for cross-app tracking.
+
+MGM projects derive country, region, and city by default; `geo_mode: country_only` keeps only country. Apps whose MGM project uses `geo_mode: off` may leave Coarse Location off their App Store privacy label, but the manifest declares it because the default collects it.
+
+Your app still needs to declare its complete data collection in its App Store Connect privacy label, including this SDK's data and any additional values it passes to `track()`, `identify()`, super properties, or `contextProvider`. Review the combined app and SDK privacy report before submission.
 
 ### What's Auto-Collected
 
-Every event includes the fields documented in [Automatic Context](#automatic-context): the user ID (or random anonymous ID), a per-launch session ID, platform, OS version, app version/build, environment, device type/model, device manufacturer, locale, and timezone. Nothing else is collected automatically.
+Every event includes the fields documented in [Automatic Context](#automatic-context): the user ID (or random anonymous ID), a per-launch session ID, platform, OS version, app version/build, environment, device type/model, device manufacturer, locale, and timezone. MGM also derives coarse location from the request IP at ingestion unless the project uses `geo_mode: off`.
 
 ### Opt-Out
 
