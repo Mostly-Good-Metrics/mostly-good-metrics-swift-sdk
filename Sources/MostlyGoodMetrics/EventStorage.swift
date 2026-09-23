@@ -18,17 +18,9 @@ extension EventStorage {
 /// File-based event storage using JSON
 final class FileEventStorage: EventStorage {
     private let fileURL: URL
-    private let queue = DispatchQueue(label: "com.mostlygoodmetrics.storage")
+    private let queue = DispatchQueue(label: "com.mostlygoodmetrics.storage", attributes: .concurrent)
     private var events: [MGMEvent] = []
     private let maxEvents: Int
-    private var staleEventCount = 0
-    private var isAppendFormatReady = false
-
-    /// Compact only after enough capped events have accumulated. Normal stores append
-    /// one JSON line and never encode the complete queue.
-    private var compactionThreshold: Int {
-        max(100, maxEvents / 10)
-    }
 
     init(maxEvents: Int = 10000, fileURL: URL? = nil) {
         self.maxEvents = maxEvents
@@ -63,26 +55,16 @@ final class FileEventStorage: EventStorage {
     }
 
     func store(event: MGMEvent, completion: ((Int) -> Void)?) {
-        queue.async {
+        queue.async(flags: .barrier) { [weak self] in
+            guard let self = self else { return }
             self.events.append(event)
 
             // Drop oldest events if we exceed the max
             if self.events.count > self.maxEvents {
-                let overflow = self.events.count - self.maxEvents
-                self.events.removeFirst(overflow)
-                self.staleEventCount += overflow
+                self.events.removeFirst(self.events.count - self.maxEvents)
             }
 
-            if self.isAppendFormatReady {
-                self.appendToDisk(event)
-            } else {
-                self.rewriteDisk()
-            }
-
-            if self.staleEventCount >= self.compactionThreshold {
-                self.rewriteDisk()
-            }
-
+            self.saveToDisk()
             completion?(self.events.count)
         }
     }
@@ -94,13 +76,15 @@ final class FileEventStorage: EventStorage {
     }
 
     func removeEvents(_ eventsToRemove: [MGMEvent]) {
-        queue.async {
+        queue.async(flags: .barrier) { [weak self] in
+            guard let self = self else { return }
+
             let removeSet = Set(eventsToRemove.map(\.clientEventId))
             self.events.removeAll { event in
                 removeSet.contains(event.clientEventId)
             }
 
-            self.rewriteDisk()
+            self.saveToDisk()
         }
     }
 
@@ -111,41 +95,22 @@ final class FileEventStorage: EventStorage {
     }
 
     func clear() {
-        queue.async {
+        queue.async(flags: .barrier) { [weak self] in
+            guard let self = self else { return }
             self.events.removeAll()
-            self.staleEventCount = 0
-            self.isAppendFormatReady = true
             try? FileManager.default.removeItem(at: self.fileURL)
         }
     }
 
     private func loadFromDisk() {
-        queue.async {
-            guard FileManager.default.fileExists(atPath: self.fileURL.path) else {
-                self.isAppendFormatReady = true
-                return
-            }
+        queue.async(flags: .barrier) { [weak self] in
+            guard let self = self else { return }
+
+            guard FileManager.default.fileExists(atPath: self.fileURL.path) else { return }
 
             do {
                 let data = try Data(contentsOf: self.fileURL)
-                let firstByte = data.first { !$0.isASCIIWhitespace }
-
-                if firstByte == Character("[").asciiValue {
-                    // Migrate the legacy JSON-array store once. Subsequent writes use
-                    // an append-only newline-delimited format.
-                    self.events = try JSONDecoder().decode([MGMEvent].self, from: data)
-                    self.trimToLimit()
-                    self.rewriteDisk()
-                } else {
-                    self.isAppendFormatReady = true
-                    self.events = data.split(separator: Character("\n").asciiValue!).compactMap {
-                        try? JSONDecoder().decode(MGMEvent.self, from: Data($0))
-                    }
-                    if self.events.count > self.maxEvents {
-                        self.trimToLimit()
-                        self.rewriteDisk()
-                    }
-                }
+                self.events = try JSONDecoder().decode([MGMEvent].self, from: data)
             } catch {
                 // If we can't load, start fresh
                 self.events = []
@@ -153,57 +118,21 @@ final class FileEventStorage: EventStorage {
         }
     }
 
-    private func appendToDisk(_ event: MGMEvent) {
+    private func saveToDisk() {
+        // Called within barrier queue
         do {
-            var data = try JSONEncoder().encode(event)
-            data.append(Character("\n").asciiValue!)
-
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                let handle = try FileHandle(forWritingTo: fileURL)
-                try handle.seekToEnd()
-                try handle.write(contentsOf: data)
-                try handle.close()
-            } else {
-                try data.write(to: fileURL, options: .atomic)
-            }
-        } catch {
-            // Silently fail - matches the existing best-effort persistence behavior.
-        }
-    }
-
-    private func rewriteDisk() {
-        isAppendFormatReady = false
-        do {
-            var data = Data()
-            for event in events {
-                data.append(try JSONEncoder().encode(event))
-                data.append(Character("\n").asciiValue!)
-            }
+            let data = try JSONEncoder().encode(events)
             try data.write(to: fileURL, options: .atomic)
-            staleEventCount = 0
-            isAppendFormatReady = true
         } catch {
             // Silently fail - we'll lose events but won't crash the app
         }
-    }
-
-    private func trimToLimit() {
-        if events.count > maxEvents {
-            events.removeFirst(events.count - maxEvents)
-        }
-    }
-}
-
-private extension UInt8 {
-    var isASCIIWhitespace: Bool {
-        self == 0x20 || self == 0x09 || self == 0x0A || self == 0x0D
     }
 }
 
 /// In-memory event storage (for testing or when persistence isn't needed)
 final class InMemoryEventStorage: EventStorage {
     private var events: [MGMEvent] = []
-    private let queue = DispatchQueue(label: "com.mostlygoodmetrics.memory-storage")
+    private let queue = DispatchQueue(label: "com.mostlygoodmetrics.memory-storage", attributes: .concurrent)
     private let maxEvents: Int
 
     init(maxEvents: Int = 10000) {
@@ -211,7 +140,8 @@ final class InMemoryEventStorage: EventStorage {
     }
 
     func store(event: MGMEvent, completion: ((Int) -> Void)?) {
-        queue.async {
+        queue.async(flags: .barrier) { [weak self] in
+            guard let self = self else { return }
             self.events.append(event)
 
             if self.events.count > self.maxEvents {
@@ -229,7 +159,9 @@ final class InMemoryEventStorage: EventStorage {
     }
 
     func removeEvents(_ eventsToRemove: [MGMEvent]) {
-        queue.async {
+        queue.async(flags: .barrier) { [weak self] in
+            guard let self = self else { return }
+
             let removeSet = Set(eventsToRemove.map(\.clientEventId))
             self.events.removeAll { event in
                 removeSet.contains(event.clientEventId)
@@ -244,8 +176,8 @@ final class InMemoryEventStorage: EventStorage {
     }
 
     func clear() {
-        queue.async {
-            self.events.removeAll()
+        queue.async(flags: .barrier) { [weak self] in
+            self?.events.removeAll()
         }
     }
 }

@@ -273,7 +273,7 @@ MostlyGoodMetrics.configure(with: config)
 | `bundleId` | App's bundle ID | Override bundle identifier |
 | `maxBatchSize` | `100` | Events per batch (1-1000) |
 | `flushInterval` | `30` | Auto-flush interval in seconds |
-| `maxStoredEvents` | `10000` | Max cached events (clamped to 100-10000) |
+| `maxStoredEvents` | `10000` | Max cached events |
 | `enableDebugLogging` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
 | `existingInstallation` | `false` | Establish lifecycle state without emitting a migration-time `$app_installed` |
@@ -417,7 +417,7 @@ Every event automatically includes contextual information to provide rich analyt
 The SDK automatically handles common tasks so you can focus on tracking what matters:
 
 **Event Management:**
-- **Event persistence** - Events are appended to disk asynchronously and survive app restarts. `track()` captures the complete event before returning, then queues its disk append; a process crash immediately after `track()` returns can lose that queued write. Lifecycle background flushes drain queued appends before reading the batch.
+- **Event persistence** - Events are saved to disk asynchronously and survive app restarts. `track()` captures the complete event before returning, then queues its JSON persistence work; a process crash immediately after `track()` returns can lose that queued write. Lifecycle background flushes drain queued writes before reading the batch.
 - **Batch processing** - Events are grouped into batches (default: 100 events per batch)
 - **Periodic flush** - Events are sent every 30 seconds (configurable via `flushInterval`)
 - **Automatic flush on batch size** - Events flush immediately when batch size is reached
@@ -570,10 +570,19 @@ DispatchQueue.main.async {
 - Event tracking uses internal serial queues for safe concurrent access
 - `track()` remains a synchronous-looking API but does not wait for storage I/O; timestamps, identity, super properties, and dynamic context are captured on the caller's thread
 - Flush operations are serialized to prevent race conditions
-- Storage operations are serialized; batch rewrites use atomic file replacement
+- Storage writes use serialized barriers and atomic file replacement
 - All configuration and state management is protected with proper synchronization
 
 > **Note:** While the SDK is thread-safe, it's recommended to call `configure()` once at app launch on the main thread before making other SDK calls.
+
+### Main-Thread Performance Regression Test
+
+The 10,000-event timing test is gated so ordinary local debug test runs remain fast. CI runs it in an optimized build and asserts every scenario, including a cleanup already in flight:
+
+```bash
+MGM_RUN_PERFORMANCE_TESTS=1 swift test -c release \
+  --filter MainThreadPerformanceTests/testTrackDoesNotBlockMainThreadOnStorage
+```
 
 ## License
 

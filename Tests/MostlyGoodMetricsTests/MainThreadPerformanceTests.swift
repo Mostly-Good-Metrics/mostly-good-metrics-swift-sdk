@@ -39,7 +39,7 @@ final class MainThreadPerformanceTests: XCTestCase {
             Scenario(name: "100 events", eventCount: 100, cleanupCount: 0),
             Scenario(name: "1,000 events", eventCount: 1_000, cleanupCount: 0),
             Scenario(name: "10,000 events", eventCount: 10_000, cleanupCount: 0),
-            Scenario(name: "10,000 events + 100-event cleanup", eventCount: 10_000, cleanupCount: 100)
+            Scenario(name: "10,000 events + 100-event cleanup in flight", eventCount: 10_000, cleanupCount: 100)
         ]
         var results: [(String, Double)] = []
 
@@ -56,14 +56,10 @@ final class MainThreadPerformanceTests: XCTestCase {
         print("|---|---:|")
         for result in results {
             print("| \(result.0) | \(String(format: "%.3f ms", result.1)) |")
-        }
-
-        if ProcessInfo.processInfo.environment["MGM_BENCHMARK_ONLY"] != "1",
-           let tenThousand = results.first(where: { $0.0 == "10,000 events" })?.1 {
             XCTAssertLessThan(
-                tenThousand,
+                result.1,
                 5,
-                "track() must not synchronously wait for storage work on the main thread"
+                "\(result.0): track() must not synchronously wait for storage work on the main thread"
             )
         }
     }

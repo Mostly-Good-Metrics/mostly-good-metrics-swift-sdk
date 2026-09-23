@@ -39,6 +39,11 @@ jobs:
       - name: Run Tests
         run: swift test --enable-code-coverage
 
+      - name: Main-Thread Performance Regression
+        env:
+          MGM_RUN_PERFORMANCE_TESTS: "1"
+        run: swift test -c release --filter MainThreadPerformanceTests/testTrackDoesNotBlockMainThreadOnStorage
+
       - name: Export LCOV
         run: |
           BIN=$(swift build --show-bin-path)

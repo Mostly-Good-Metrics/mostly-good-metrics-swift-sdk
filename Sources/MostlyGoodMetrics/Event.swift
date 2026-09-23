@@ -2,7 +2,6 @@ import Foundation
 
 /// Represents an analytics event to be tracked
 public struct MGMEvent: Codable, Equatable {
-    private static let maximumPropertiesSize = 10 * 1024
     private static let timestampFormatterLock = NSLock()
     private static let fractionalTimestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -87,7 +86,7 @@ public struct MGMEvent: Codable, Equatable {
         self.name = name
         self.clientEventId = UUID().uuidString
         self.timestamp = timestamp
-        self.properties = Self.boundedProperties(properties)
+        self.properties = properties?.mapValues { AnyCodable($0) }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -131,28 +130,6 @@ public struct MGMEvent: Codable, Equatable {
         properties = try container.decodeIfPresent([String: AnyCodable].self, forKey: .properties)
     }
 
-    private static func boundedProperties(_ properties: [String: Any]?) -> [String: AnyCodable]? {
-        guard let properties, !properties.isEmpty else { return nil }
-
-        let converted = properties.mapValues { AnyCodable($0) }
-        let encoder = JSONEncoder()
-        if let data = try? encoder.encode(converted), data.count <= maximumPropertiesSize {
-            return converted
-        }
-
-        // Keep a deterministic subset whose encoded JSON stays within the documented
-        // 10 KB limit. AnyCodable has already snapshotted and bounded nested values.
-        var bounded: [String: AnyCodable] = [:]
-        for key in converted.keys.sorted() {
-            bounded[key] = converted[key]
-            guard let data = try? encoder.encode(bounded), data.count <= maximumPropertiesSize else {
-                bounded.removeValue(forKey: key)
-                continue
-            }
-        }
-        return bounded.isEmpty ? nil : bounded
-    }
-
     private static func timestampString(from date: Date) -> String {
         timestampFormatterLock.lock()
         defer { timestampFormatterLock.unlock() }
@@ -172,7 +149,7 @@ public struct AnyCodable: Codable, Equatable {
     public let value: Any
 
     public init(_ value: Any) {
-        self.value = Self.snapshot(value, depth: 0)
+        self.value = value
     }
 
     public init(from decoder: Decoder) throws {
@@ -237,29 +214,6 @@ public struct AnyCodable: Codable, Equatable {
             return lhs == rhs
         default:
             return false
-        }
-    }
-
-    private static func snapshot(_ value: Any, depth: Int) -> Any {
-        guard depth <= 3 else { return NSNull() }
-
-        switch value {
-        case is NSNull:
-            return NSNull()
-        case let bool as Bool:
-            return bool
-        case let int as Int:
-            return int
-        case let double as Double:
-            return double
-        case let string as String:
-            return String(string.prefix(1000))
-        case let array as [Any]:
-            return array.map { snapshot($0, depth: depth + 1) }
-        case let dictionary as [String: Any]:
-            return dictionary.mapValues { snapshot($0, depth: depth + 1) }
-        default:
-            return NSNull()
         }
     }
 }
