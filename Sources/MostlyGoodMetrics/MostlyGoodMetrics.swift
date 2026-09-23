@@ -199,7 +199,7 @@ public final class MostlyGoodMetrics {
             loadExperiments()
         }
 
-        debugLog("Initialized with \(self.storage.eventCount()) cached events")
+        debugLog("Initialized")
     }
 
     /// Internal initializer for testing with custom storage
@@ -329,13 +329,11 @@ public final class MostlyGoodMetrics {
             event.timezone = currentTimezone
         }
 
-        storage.store(event: event)
-        debugLog("Tracked event: \(name)")
-
-        // Auto-flush if we've reached the batch size
-        if storage.eventCount() >= configuration.maxBatchSize {
-            flush()
+        storage.store(event: event) { [weak self] eventCount in
+            guard let self, eventCount >= self.configuration.maxBatchSize else { return }
+            self.flush()
         }
+        debugLog("Tracked event: \(name)")
     }
 
     /// Tracks an event with the given name

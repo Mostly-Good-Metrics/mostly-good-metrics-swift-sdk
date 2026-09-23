@@ -114,6 +114,9 @@ final class MostlyGoodMetricsTests: XCTestCase {
 
         let config3 = MGMConfiguration(apiKey: "key", maxStoredEvents: 5000)
         XCTAssertEqual(config3.maxStoredEvents, 5000)
+
+        let config4 = MGMConfiguration(apiKey: "key", maxStoredEvents: 100_000)
+        XCTAssertEqual(config4.maxStoredEvents, 10_000)
     }
 
     // MARK: - Event Tests
@@ -140,6 +143,17 @@ final class MostlyGoodMetricsTests: XCTestCase {
         XCTAssertEqual(event.name, "test_event")
         XCTAssertNotNil(event.properties)
         XCTAssertEqual(event.properties?.count, 3)
+    }
+
+    func testEventPropertiesAreBoundedToTenKilobytes() throws {
+        let properties = Dictionary(uniqueKeysWithValues: (0..<20).map {
+            ("property_\($0)", String(repeating: "x", count: 1000))
+        })
+        let event = MGMEvent(name: "bounded_event", properties: properties)
+
+        let data = try JSONEncoder().encode(event.properties)
+        XCTAssertLessThanOrEqual(data.count, 10 * 1024)
+        XCTAssertLessThan(event.properties?.count ?? 0, properties.count)
     }
 
     // MARK: - Client Event ID Tests

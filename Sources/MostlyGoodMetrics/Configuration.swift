@@ -20,7 +20,7 @@ public struct MGMConfiguration {
     /// Interval in seconds between automatic flush attempts
     public var flushInterval: TimeInterval
 
-    /// Maximum number of events to store locally before dropping oldest
+    /// Maximum number of events to store locally before dropping oldest (max 10000)
     public var maxStoredEvents: Int
 
     /// Whether to enable debug logging
@@ -86,7 +86,7 @@ public struct MGMConfiguration {
     ///   - bundleId: Optional bundle ID override
     ///   - maxBatchSize: Maximum events per batch (defaults to 100, max 1000)
     ///   - flushInterval: Seconds between auto-flush (defaults to 30)
-    ///   - maxStoredEvents: Maximum cached events (defaults to 10000)
+    ///   - maxStoredEvents: Maximum cached events (defaults to 10000, max 10000)
     ///   - enableDebugLogging: Whether to enable debug logging (defaults to false)
     ///   - trackAppLifecycleEvents: Whether to auto-track lifecycle events (defaults to true)
     ///   - existingInstallation: Whether this install existed before MGM was added (defaults to false)
@@ -122,7 +122,7 @@ public struct MGMConfiguration {
         self.bundleId = bundleId
         self.maxBatchSize = min(max(1, maxBatchSize), 1000)
         self.flushInterval = max(1, flushInterval)
-        self.maxStoredEvents = max(100, maxStoredEvents)
+        self.maxStoredEvents = min(max(100, maxStoredEvents), 10000)
         self.enableDebugLogging = enableDebugLogging
         self.trackAppLifecycleEvents = trackAppLifecycleEvents
         self.existingInstallation = existingInstallation
