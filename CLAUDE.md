@@ -11,6 +11,14 @@ Every code change must include corresponding tests:
 - Bug fixes need a test that reproduces the bug and verifies the fix
 - API changes need tests for both the old behavior (if backwards compatible) and new behavior
 
+The main-thread storage timing assertion is intentionally gated from ordinary
+debug runs. CI must run it separately in release mode with:
+
+```
+MGM_RUN_PERFORMANCE_TESTS=1 swift test -c release \
+  --filter MainThreadPerformanceTests/testTrackDoesNotBlockMainThreadOnStorage
+```
+
 ### 2. PR Workflow
 
 After creating a PR:

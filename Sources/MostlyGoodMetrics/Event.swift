@@ -2,6 +2,18 @@ import Foundation
 
 /// Represents an analytics event to be tracked
 public struct MGMEvent: Codable, Equatable {
+    private static let timestampFormatterLock = NSLock()
+    private static let fractionalTimestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let standardTimestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
     /// The event name (alphanumeric + underscore, must start with letter, max 255 chars)
     public let name: String
 
@@ -82,9 +94,7 @@ public struct MGMEvent: Codable, Equatable {
         try container.encode(name, forKey: .name)
         try container.encode(clientEventId, forKey: .clientEventId)
 
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        try container.encode(formatter.string(from: timestamp), forKey: .timestamp)
+        try container.encode(Self.timestampString(from: timestamp), forKey: .timestamp)
 
         try container.encodeIfPresent(userId, forKey: .userId)
         try container.encodeIfPresent(sessionId, forKey: .sessionId)
@@ -105,14 +115,7 @@ public struct MGMEvent: Codable, Equatable {
         clientEventId = try container.decodeIfPresent(String.self, forKey: .clientEventId) ?? UUID().uuidString
 
         let timestampString = try container.decode(String.self, forKey: .timestamp)
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: timestampString) {
-            timestamp = date
-        } else {
-            formatter.formatOptions = [.withInternetDateTime]
-            timestamp = formatter.date(from: timestampString) ?? Date()
-        }
+        timestamp = Self.date(from: timestampString) ?? Date()
 
         userId = try container.decodeIfPresent(String.self, forKey: .userId)
         sessionId = try container.decodeIfPresent(String.self, forKey: .sessionId)
@@ -125,6 +128,19 @@ public struct MGMEvent: Codable, Equatable {
         locale = try container.decodeIfPresent(String.self, forKey: .locale)
         timezone = try container.decodeIfPresent(String.self, forKey: .timezone)
         properties = try container.decodeIfPresent([String: AnyCodable].self, forKey: .properties)
+    }
+
+    private static func timestampString(from date: Date) -> String {
+        timestampFormatterLock.lock()
+        defer { timestampFormatterLock.unlock() }
+        return fractionalTimestampFormatter.string(from: date)
+    }
+
+    private static func date(from string: String) -> Date? {
+        timestampFormatterLock.lock()
+        defer { timestampFormatterLock.unlock() }
+        return fractionalTimestampFormatter.date(from: string)
+            ?? standardTimestampFormatter.date(from: string)
     }
 }
 
