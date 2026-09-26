@@ -36,15 +36,15 @@ jobs:
         id: version
         run: |
           # Detect version file and extract current version
-          if [ -f "pubspec.yaml" ]; then
+          if [ -f "VERSION" ]; then
+            FILE="VERSION"
+            CURRENT=$(tr -d '[:space:]' < VERSION)
+          elif [ -f "pubspec.yaml" ]; then
             FILE="pubspec.yaml"
             CURRENT=$(grep "^version:" pubspec.yaml | sed 's/version: //')
           elif [ -f "package.json" ]; then
             FILE="package.json"
             CURRENT=$(node -p "require('./package.json').version")
-          elif ls *.podspec 1> /dev/null 2>&1; then
-            FILE=$(ls *.podspec | head -1)
-            CURRENT=$(grep -E "^[[:space:]]*s\.version[[:space:]]*=" "$FILE" | sed "s/.*'\\(.*\\)'.*/\\1/")
           elif [ -f "mostlygoodmetrics/build.gradle.kts" ]; then
             FILE="mostlygoodmetrics/build.gradle.kts"
             CURRENT=$(grep 'version = "' "$FILE" | sed 's/.*version = "\(.*\)".*/\1/')
@@ -83,12 +83,12 @@ jobs:
           FILE="${{ steps.version.outputs.file }}"
           NEW="${{ steps.version.outputs.new }}"
 
-          if [ "$FILE" = "pubspec.yaml" ]; then
+          if [ "$FILE" = "VERSION" ]; then
+            printf '%s\n' "$NEW" > VERSION
+          elif [ "$FILE" = "pubspec.yaml" ]; then
             sed -i "s/^version: .*/version: $NEW/" pubspec.yaml
           elif [ "$FILE" = "package.json" ]; then
             npm version $NEW --no-git-tag-version
-          elif [[ "$FILE" == *.podspec ]]; then
-            sed -i "s/s\.version.*=.*['\"].*['\"]/s.version          = '$NEW'/" "$FILE"
           elif [ "$FILE" = "mostlygoodmetrics/build.gradle.kts" ]; then
             sed -i "s/version = \".*\"/version = \"$NEW\"/" "$FILE"
           fi
@@ -112,4 +112,3 @@ jobs:
           title: "Bump version to ${{ steps.version.outputs.new }}"
           body: |
             ${{ inputs.release_notes || 'Bug fixes and improvements' }}
-
