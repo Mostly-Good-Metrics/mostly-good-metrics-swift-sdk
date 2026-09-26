@@ -78,11 +78,10 @@ This will:
 After Fastlane completes:
 1. Monitor the PR checks with `gh pr checks <PR_NUMBER>`
 2. When all checks pass, merge with `gh pr merge <PR_NUMBER> --squash --delete-branch`
-3. CI automatically publishes to CocoaPods and creates a GitHub release
+3. CI creates a GitHub release and tag; Swift Package Manager resolves that tag
 
 **DO NOT:**
-- Manually edit version in `.podspec`
-- Run `pod trunk push` directly
+- Manually edit `VERSION` or the `sdkVersion` constant
 - Create version tags manually
 
-Fastlane and CI handle all versioning and publishing automatically.
+Fastlane and CI handle all versioning and releases automatically.

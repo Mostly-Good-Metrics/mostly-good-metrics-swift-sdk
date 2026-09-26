@@ -9,7 +9,6 @@ Documentation: [docs.mostlygoodmetrics.com](https://docs.mostlygoodmetrics.com)
 - [Requirements](#requirements)
 - [Installation](#installation)
   - [Swift Package Manager](#swift-package-manager)
-  - [CocoaPods](#cocoapods)
 - [Quick Start](#quick-start)
   - [UIKit Initialization](#uikit-initialization)
   - [SwiftUI Initialization](#swiftui-initialization)
@@ -35,31 +34,19 @@ Documentation: [docs.mostlygoodmetrics.com](https://docs.mostlygoodmetrics.com)
 
 ## Installation
 
+The SDK is distributed through Swift Package Manager.
+
 ### Swift Package Manager
 
 Add the following to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Mostly-Good-Metrics/mostly-good-metrics-swift-sdk", from: "0.7.0")
+    .package(url: "https://github.com/Mostly-Good-Metrics/mostly-good-metrics-swift-sdk", from: "0.11.0")
 ]
 ```
 
 Or in Xcode: **File > Add Package Dependencies** and enter the repository URL.
-
-### CocoaPods
-
-Add to your `Podfile`:
-
-```ruby
-pod 'MostlyGoodMetrics', '~> 0.7.0'
-```
-
-Then run:
-
-```bash
-pod install
-```
 
 ## Quick Start
 
@@ -171,7 +158,7 @@ The SDK is designed to be privacy-friendly by default:
 
 ### Apple Privacy Manifest
 
-The Swift Package and CocoaPods target bundle `PrivacyInfo.xcprivacy`. It declares the SDK's use of app-only UserDefaults, analytics events and identifiers, optional name and email supplied to `identify()`, device and app context, experiment data, and coarse location derived by MGM from the request IP at ingestion. The SDK does not use data for cross-app tracking.
+The Swift Package bundles `PrivacyInfo.xcprivacy`. It declares the SDK's use of app-only UserDefaults, analytics events and identifiers, optional name and email supplied to `identify()`, device and app context, experiment data, and coarse location derived by MGM from the request IP at ingestion. The SDK does not use data for cross-app tracking.
 
 MGM projects derive country, region, and city by default; `geo_mode: country_only` keeps only country. Apps whose MGM project uses `geo_mode: off` may leave Coarse Location off their App Store privacy label, but the manifest declares it because the default collects it.
 

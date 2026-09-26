@@ -4089,36 +4089,26 @@ final class PrivacyControlsTests: XCTestCase {
 
 // MARK: - SDK Version Tests
 
-/// Guards against the reported SDK version drifting from the podspec release version.
+/// Guards against the reported SDK version drifting from the release version.
 final class SDKVersionTests: XCTestCase {
 
     /// The reported `sdkVersion` (sent in User-Agent and X-MGM-SDK-Version headers)
-    /// must match `s.version` in MostlyGoodMetrics.podspec — the release source of truth.
-    func testSDKVersionMatchesPodspec() throws {
-        // Locate the podspec relative to this test file (repo root is three levels up).
+    /// must match the root VERSION file — the release source of truth.
+    func testSDKVersionMatchesVersionFile() throws {
+        // Locate VERSION relative to this test file (repo root is three levels up).
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // MostlyGoodMetricsTests/
             .deletingLastPathComponent() // Tests/
             .deletingLastPathComponent() // repo root
-        let podspecURL = repoRoot.appendingPathComponent("MostlyGoodMetrics.podspec")
+        let versionURL = repoRoot.appendingPathComponent("VERSION")
 
-        let podspec = try String(contentsOf: podspecURL, encoding: .utf8)
+        let releaseVersion = try String(contentsOf: versionURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Parse `s.version = 'X.Y.Z'` from the podspec.
-        let pattern = #"s\.version\s*=\s*['"]([^'"]+)['"]"#
-        let regex = try NSRegularExpression(pattern: pattern)
-        let range = NSRange(podspec.startIndex..., in: podspec)
-        guard let match = regex.firstMatch(in: podspec, range: range),
-              let versionRange = Range(match.range(at: 1), in: podspec) else {
-            XCTFail("Could not find s.version in podspec")
-            return
-        }
-
-        let podspecVersion = String(podspec[versionRange])
         XCTAssertEqual(
             sdkVersion,
-            podspecVersion,
-            "sdkVersion (\(sdkVersion)) must match podspec version (\(podspecVersion)). Update NetworkClient.swift when bumping the release."
+            releaseVersion,
+            "sdkVersion (\(sdkVersion)) must match VERSION (\(releaseVersion)). Update NetworkClient.swift when bumping the release."
         )
     }
 }
