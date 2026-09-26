@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'MostlyGoodMetrics'
-  s.version          = '0.10.1'
+  s.version          = '0.11.0'
   s.summary          = 'Analytics SDK for iOS, macOS, tvOS, and watchOS'
   s.description      = <<-DESC
     MostlyGoodMetrics is a lightweight analytics SDK that provides event tracking,
