@@ -89,6 +89,19 @@ public struct MGMEvent: Codable, Equatable {
         self.properties = properties?.mapValues { AnyCodable($0) }
     }
 
+    /// Internal capture path used by `track()`. It snapshots nested containers on
+    /// the caller's thread without changing the public `AnyCodable.init` behavior.
+    internal init(
+        name: String,
+        capturedProperties: [String: Any]?,
+        timestamp: Date = Date()
+    ) {
+        self.name = name
+        self.clientEventId = UUID().uuidString
+        self.timestamp = timestamp
+        self.properties = capturedProperties?.mapValues { AnyCodable(capturing: $0) }
+    }
+
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(name, forKey: .name)
@@ -150,6 +163,10 @@ public struct AnyCodable: Codable, Equatable {
 
     public init(_ value: Any) {
         self.value = value
+    }
+
+    internal init(capturing value: Any) {
+        self.value = Self.capture(value)
     }
 
     public init(from decoder: Decoder) throws {
@@ -214,6 +231,27 @@ public struct AnyCodable: Codable, Equatable {
             return lhs == rhs
         default:
             return false
+        }
+    }
+
+    private static func capture(_ value: Any) -> Any {
+        switch value {
+        case is NSNull:
+            return NSNull()
+        case let bool as Bool:
+            return bool
+        case let int as Int:
+            return int
+        case let double as Double:
+            return double
+        case let string as String:
+            return String(string)
+        case let array as [Any]:
+            return array.map(capture)
+        case let dictionary as [String: Any]:
+            return dictionary.mapValues(capture)
+        default:
+            return value
         }
     }
 }

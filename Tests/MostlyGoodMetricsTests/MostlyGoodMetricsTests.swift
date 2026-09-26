@@ -114,6 +114,9 @@ final class MostlyGoodMetricsTests: XCTestCase {
 
         let config3 = MGMConfiguration(apiKey: "key", maxStoredEvents: 5000)
         XCTAssertEqual(config3.maxStoredEvents, 5000)
+
+        let config4 = MGMConfiguration(apiKey: "key", maxStoredEvents: 25_000)
+        XCTAssertEqual(config4.maxStoredEvents, 25_000)
     }
 
     // MARK: - Event Tests

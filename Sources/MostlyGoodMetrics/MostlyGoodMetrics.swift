@@ -166,7 +166,10 @@ public final class MostlyGoodMetrics {
     /// - Parameter configuration: The SDK configuration
     public init(configuration: MGMConfiguration) {
         self.configuration = configuration
-        self.storage = FileEventStorage(maxEvents: configuration.maxStoredEvents)
+        self.storage = FileEventStorage(
+            maxEvents: configuration.maxStoredEvents,
+            warningHandler: { Self.debugLog($0, configuration: configuration) }
+        )
         self.networkClient = NetworkClient(configuration: configuration)
 
         // Restore or generate user ID
@@ -315,7 +318,10 @@ public final class MostlyGoodMetrics {
             mergedProperties[key] = value
         }
 
-        var event = MGMEvent(name: name, properties: mergedProperties.isEmpty ? nil : mergedProperties)
+        var event = MGMEvent(
+            name: name,
+            capturedProperties: mergedProperties.isEmpty ? nil : mergedProperties
+        )
         event.userId = effectiveUserId
         event.sessionId = sessionId
         event.platform = currentPlatform
@@ -1332,6 +1338,10 @@ public final class MostlyGoodMetrics {
     }
 
     private func debugLog(_ message: String) {
+        Self.debugLog(message, configuration: configuration)
+    }
+
+    private static func debugLog(_ message: String, configuration: MGMConfiguration) {
         if configuration.enableDebugLogging {
             print("[MostlyGoodMetrics] \(message)")
         }

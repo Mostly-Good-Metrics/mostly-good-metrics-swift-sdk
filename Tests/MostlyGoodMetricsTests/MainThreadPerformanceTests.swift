@@ -62,6 +62,14 @@ final class MainThreadPerformanceTests: XCTestCase {
                 "\(result.0): track() must not synchronously wait for storage work on the main thread"
             )
         }
+
+        let largePayloadMedian = measureLargePayloadTrackLatency()
+        print("| 400-property payload | \(String(format: "%.3f ms", largePayloadMedian)) |")
+        XCTAssertLessThan(
+            largePayloadMedian,
+            5,
+            "Large property capture must remain within the caller-thread budget"
+        )
     }
 
     private func measureTrackLatency(scenario: Scenario, sample: Int) throws -> Double {
@@ -107,5 +115,36 @@ final class MainThreadPerformanceTests: XCTestCase {
 
         _ = storage.eventCount() // Drain storage work before removing the temporary file.
         return elapsed
+    }
+
+    private func measureLargePayloadTrackLatency() -> Double {
+        let properties = Dictionary(uniqueKeysWithValues: (0..<400).map {
+            ("property_\($0)", String(repeating: "x", count: 64))
+        })
+        let storage = InMemoryEventStorage(maxEvents: 100)
+        let client = MostlyGoodMetrics(
+            configuration: MGMConfiguration(apiKey: "benchmark", maxBatchSize: 1_000),
+            storage: storage,
+            networkClient: NonCompletingNetworkClient()
+        )
+        var samples: [Double] = []
+
+        for _ in 0..<25 {
+            var elapsed = 0.0
+            let measurement = {
+                let start = DispatchTime.now().uptimeNanoseconds
+                client.track("large_payload", properties: properties)
+                elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+            }
+            if Thread.isMainThread {
+                measurement()
+            } else {
+                DispatchQueue.main.sync(execute: measurement)
+            }
+            samples.append(elapsed)
+        }
+
+        _ = storage.eventCount()
+        return samples.sorted()[samples.count / 2]
     }
 }

@@ -419,6 +419,7 @@ The SDK automatically handles common tasks so you can focus on tracking what mat
 **Event Management:**
 - **Event persistence** - Events are saved to disk asynchronously and survive app restarts. `track()` captures the complete event before returning, then queues its JSON persistence work; a process crash immediately after `track()` returns can lose that queued write. Lifecycle background flushes drain queued writes before reading the batch.
 - **Batch processing** - Events are grouped into batches (default: 100 events per batch)
+- **Journal format** - New events use newline-delimited JSON appends. Before migration, the legacy JSON-array store is copied beside the active file and kept until the first successful flush. Valid events are salvaged individually, and at most three unreadable originals are retained for recovery; opting out removes all of them.
 - **Periodic flush** - Events are sent every 30 seconds (configurable via `flushInterval`)
 - **Automatic flush on batch size** - Events flush immediately when batch size is reached
 - **Background flush** - Events are automatically flushed when the app goes to background (resigns active)
@@ -570,10 +571,14 @@ DispatchQueue.main.async {
 - Event tracking uses internal serial queues for safe concurrent access
 - `track()` remains a synchronous-looking API but does not wait for storage I/O; timestamps, identity, super properties, and dynamic context are captured on the caller's thread
 - Flush operations are serialized to prevent race conditions
-- Storage writes use serialized barriers and atomic file replacement
+- Storage operations are serialized, appends use `O_APPEND`, and migration, compaction, and removal use atomic file replacement
 - All configuration and state management is protected with proper synchronization
 
 > **Note:** While the SDK is thread-safe, it's recommended to call `configure()` once at app launch on the main thread before making other SDK calls.
+
+`pendingEventCount` remains a synchronous diagnostic property. Calling it while
+storage migration or compaction is running can block the calling thread; avoid
+reading it from latency-sensitive main-thread paths.
 
 ### Main-Thread Performance Regression Test
 
