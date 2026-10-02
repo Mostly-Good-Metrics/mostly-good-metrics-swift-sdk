@@ -42,19 +42,41 @@ protocol NetworkClientProtocol {
 final class NetworkClient: NetworkClientProtocol {
     private let configuration: MGMConfiguration
     private let session: URLSession
+    private let boundedResponses: BoundedResponses?
 
     /// Absolute backoff deadline, in seconds since the Foundation reference date.
     // A primitive timestamp keeps synchronization visible to Thread Sanitizer.
     private var retryAfterDeadline: TimeInterval?
     private let retryAfterLock = NSLock()
 
-    init(configuration: MGMConfiguration, session: URLSession? = nil) {
+    init(configuration: MGMConfiguration, session: URLSession? = nil, sessionConfiguration: URLSessionConfiguration? = nil) {
         self.configuration = configuration
 
-        let sessionConfig = URLSessionConfiguration.default
+        let sessionConfig = sessionConfiguration ?? URLSessionConfiguration.default
         sessionConfig.timeoutIntervalForRequest = 30
         sessionConfig.timeoutIntervalForResource = 60
-        self.session = session ?? URLSession(configuration: sessionConfig)
+        if let session {
+            self.session = session
+            self.boundedResponses = nil
+        } else {
+            let responses = BoundedResponses()
+            self.boundedResponses = responses
+            let delegateQueue = OperationQueue()
+            delegateQueue.maxConcurrentOperationCount = 1
+            self.session = URLSession(configuration: sessionConfig, delegate: responses, delegateQueue: delegateQueue)
+        }
+    }
+
+    deinit {
+        if boundedResponses != nil { session.invalidateAndCancel() }
+    }
+
+    private func responseTask(with request: URLRequest,
+                              completion: @escaping (Data?, URLResponse?, Error?) -> Void) -> URLSessionDataTask? {
+        if let responses = boundedResponses {
+            return responses.task(in: session, request: request, completion: completion)
+        }
+        return session.dataTask(with: request, completionHandler: completion)
     }
 
     /// Sends a batch of events to the API
@@ -130,7 +152,7 @@ final class NetworkClient: NetworkClientProtocol {
             }
         }
 
-        let task = session.dataTask(with: request) { [weak self] data, response, error in
+        let task = responseTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
 
             if let error = error {
@@ -185,7 +207,7 @@ final class NetworkClient: NetworkClientProtocol {
             }
         }
 
-        task.resume()
+        task?.resume()
     }
 
     /// Fetches experiment assignments for a user
@@ -223,7 +245,7 @@ final class NetworkClient: NetworkClientProtocol {
             debugLog("Fetching experiments for user: \(userId)")
         }
 
-        let task = session.dataTask(with: request) { [weak self] data, response, error in
+        let task = responseTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
 
             if let error = error {
@@ -239,7 +261,7 @@ final class NetworkClient: NetworkClientProtocol {
 
             switch httpResponse.statusCode {
             case 200:
-                guard let data = data else {
+                guard let data = data, JSONSafety.accepts(data) else {
                     completion(.failure(.invalidResponse))
                     return
                 }
@@ -279,7 +301,7 @@ final class NetworkClient: NetworkClientProtocol {
             }
         }
 
-        task.resume()
+        task?.resume()
     }
 
     /// Fetches experiment configurations for local (on-device) variant assignment.
@@ -299,7 +321,7 @@ final class NetworkClient: NetworkClientProtocol {
             debugLog("Fetching experiment configs")
         }
 
-        let task = session.dataTask(with: request) { [weak self] data, response, error in
+        let task = responseTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }
 
             if let error = error {
@@ -315,7 +337,7 @@ final class NetworkClient: NetworkClientProtocol {
 
             switch httpResponse.statusCode {
             case 200:
-                guard let data = data else {
+                guard let data = data, JSONSafety.accepts(data) else {
                     completion(.failure(.invalidResponse))
                     return
                 }
@@ -355,11 +377,11 @@ final class NetworkClient: NetworkClientProtocol {
             }
         }
 
-        task.resume()
+        task?.resume()
     }
 
     private func parseErrorMessage(from data: Data?) -> String {
-        guard let data = data else { return "Unknown error" }
+        guard let data = data, JSONSafety.accepts(data) else { return "Unknown error" }
 
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let error = json["error"] as? String {

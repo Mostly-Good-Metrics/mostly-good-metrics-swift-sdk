@@ -86,7 +86,7 @@ public struct MGMEvent: Codable, Equatable {
         self.name = name
         self.clientEventId = UUID().uuidString
         self.timestamp = timestamp
-        self.properties = properties?.mapValues { AnyCodable($0) }
+        self.properties = PropertySnapshot.properties(properties)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -106,7 +106,7 @@ public struct MGMEvent: Codable, Equatable {
         try container.encodeIfPresent(deviceManufacturer, forKey: .deviceManufacturer)
         try container.encodeIfPresent(locale, forKey: .locale)
         try container.encodeIfPresent(timezone, forKey: .timezone)
-        try container.encodeIfPresent(properties, forKey: .properties)
+        try container.encodeIfPresent(Self.boundedProperties(properties), forKey: .properties)
     }
 
     public init(from decoder: Decoder) throws {
@@ -127,7 +127,13 @@ public struct MGMEvent: Codable, Equatable {
         deviceManufacturer = try container.decodeIfPresent(String.self, forKey: .deviceManufacturer)
         locale = try container.decodeIfPresent(String.self, forKey: .locale)
         timezone = try container.decodeIfPresent(String.self, forKey: .timezone)
-        properties = try container.decodeIfPresent([String: AnyCodable].self, forKey: .properties)
+        properties = Self.boundedProperties(try container.decodeIfPresent([String: AnyCodable].self, forKey: .properties))
+    }
+
+    private static func boundedProperties(_ properties: [String: AnyCodable]?) -> [String: AnyCodable]? {
+        guard let properties else { return nil }
+        let raw = Dictionary(uniqueKeysWithValues: properties.prefix(PropertySnapshot.maxNodes).map { ($0.key, $0.value.value) })
+        return PropertySnapshot.properties(raw)
     }
 
     private static func timestampString(from date: Date) -> String {
@@ -149,10 +155,18 @@ public struct AnyCodable: Codable, Equatable {
     public let value: Any
 
     public init(_ value: Any) {
-        self.value = value
+        var snapshot = PropertySnapshot()
+        self.value = snapshot.copy(value)
+    }
+
+    init(snapshotValue: Any) {
+        self.value = snapshotValue
     }
 
     public init(from decoder: Decoder) throws {
+        guard decoder.codingPath.count <= 16 else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Property nesting exceeds safety limit"))
+        }
         let container = try decoder.singleValueContainer()
 
         if container.decodeNil() {

@@ -43,13 +43,19 @@ jobs:
         run: swift test --scratch-path .build/actor-checks -Xswiftc -enable-actor-data-race-checks
 
       - name: Thread Sanitizer Concurrency Regressions
-        run: swift test --scratch-path .build/thread-sanitizer --sanitize=thread --filter 'FlushConcurrencyTests|NetworkConcurrencyTests|IdentityConcurrencyTests|ContextProviderConcurrencyTests'
+        run: swift test --scratch-path .build/thread-sanitizer --sanitize=thread --filter 'FlushConcurrencyTests|NetworkConcurrencyTests|IdentityConcurrencyTests|ContextProviderConcurrencyTests|HostSafetyTests|BoundedResponseTests'
 
       - name: Swift 6 Consumer Regression
         run: swift run --package-path Tests/Swift6Consumer --scratch-path .build/swift6-consumer Swift6Consumer
 
       - name: Optimized Swift 6 Consumer Regression
         run: swift run -c release -Xswiftc -enable-testing --package-path Tests/Swift6Consumer --scratch-path .build/swift6-consumer-release Swift6Consumer
+
+      - name: Optimized Swift 6 Host Safety Regression
+        run: |
+          swift run -c release -Xswiftc -enable-testing --package-path Tests/Swift6Consumer --scratch-path .build/swift6-consumer-release Swift6Consumer --host-safety-control
+          swift run -c release -Xswiftc -enable-testing --package-path Tests/Swift6Consumer --scratch-path .build/swift6-consumer-release Swift6Consumer --host-safety-only
+          swift run -c release -Xswiftc -enable-testing --package-path Tests/Swift6Consumer --scratch-path .build/swift6-consumer-release Swift6Consumer --readiness-safety-only
 
       - name: Swift 6 Flush Actor Contract Compile Regression
         run: |
@@ -138,6 +144,8 @@ jobs:
             -only-testing:MostlyGoodMetricsTests/NetworkConcurrencyTests \
             -only-testing:MostlyGoodMetricsTests/IdentityConcurrencyTests \
             -only-testing:MostlyGoodMetricsTests/ContextProviderConcurrencyTests \
+            -only-testing:MostlyGoodMetricsTests/HostSafetyTests \
+            -only-testing:MostlyGoodMetricsTests/BoundedResponseTests \
             OTHER_SWIFT_FLAGS='$(inherited) -enable-actor-data-race-checks' \
             -skipPackagePluginValidation
 

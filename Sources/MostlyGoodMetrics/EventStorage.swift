@@ -20,10 +20,50 @@ final class FileEventStorage: EventStorage {
     private let fileURL: URL
     private let queue = DispatchQueue(label: "com.mostlygoodmetrics.storage", attributes: .concurrent)
     private var events: [MGMEvent] = []
+    private let queueKey = DispatchSpecificKey<Bool>()
     private let maxEvents: Int
+    private var eventWeights: [Int] = []
+    private var retainedBytes = 0
+    private let admissionLock = NSLock()
+    private var pendingBytes = 0
+
+    private func admit(_ weight: Int) -> Bool {
+        admissionLock.lock()
+        defer { admissionLock.unlock() }
+        guard weight <= EventMemoryBudget.maxBytes,
+              pendingBytes + weight <= EventMemoryBudget.maxBytes * 4 else { return false }
+        pendingBytes += weight
+        return true
+    }
+
+    private func releaseAdmission(_ weight: Int) {
+        admissionLock.lock()
+        pendingBytes -= weight
+        admissionLock.unlock()
+    }
+
+    private func append(_ event: MGMEvent, weight: Int) {
+        guard weight <= EventMemoryBudget.maxBytes else { return }
+        events.append(event)
+        eventWeights.append(weight)
+        retainedBytes += weight
+        while events.count > maxEvents || retainedBytes > EventMemoryBudget.maxBytes {
+            events.removeFirst()
+            retainedBytes -= eventWeights.removeFirst()
+        }
+    }
+
+    private func rebuildWeights() {
+        let previous = events
+        events = []
+        eventWeights = []
+        retainedBytes = 0
+        for event in previous { append(event, weight: EventMemoryBudget.weight(event)) }
+    }
 
     init(maxEvents: Int = 10000, fileURL: URL? = nil) {
-        self.maxEvents = maxEvents
+        self.maxEvents = max(0, maxEvents)
+        queue.setSpecific(key: queueKey, value: true)
 
         let fileManager = FileManager.default
         let resolvedFileURL: URL
@@ -34,9 +74,9 @@ final class FileEventStorage: EventStorage {
 
             #if os(tvOS)
             // tvOS doesn't have persistent storage, use caches
-            appSupportURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            appSupportURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first ?? fileManager.temporaryDirectory
             #else
-            appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? fileManager.temporaryDirectory
             #endif
 
             resolvedFileURL = appSupportURL
@@ -55,24 +95,20 @@ final class FileEventStorage: EventStorage {
     }
 
     func store(event: MGMEvent, completion: ((Int) -> Void)?) {
+        let weight = EventMemoryBudget.weight(event)
+        guard admit(weight) else { return }
         queue.async(flags: .barrier) { [weak self] in
             guard let self = self else { return }
-            self.events.append(event)
-
-            // Drop oldest events if we exceed the max
-            if self.events.count > self.maxEvents {
-                self.events.removeFirst(self.events.count - self.maxEvents)
-            }
-
-            self.saveToDisk()
+            defer { self.releaseAdmission(weight) }
+            self.append(event, weight: weight)
+            self.scheduleSaveToDisk()
             completion?(self.events.count)
         }
     }
 
     func fetchEvents(limit: Int) -> [MGMEvent] {
-        queue.sync {
-            Array(events.prefix(limit))
-        }
+        if DispatchQueue.getSpecific(key: queueKey) == true { return Array(events.prefix(max(0, limit))) }
+        return queue.sync { Array(events.prefix(max(0, limit))) }
     }
 
     func removeEvents(_ eventsToRemove: [MGMEvent]) {
@@ -83,21 +119,23 @@ final class FileEventStorage: EventStorage {
             self.events.removeAll { event in
                 removeSet.contains(event.clientEventId)
             }
+            self.rebuildWeights()
 
-            self.saveToDisk()
+            self.scheduleSaveToDisk()
         }
     }
 
     func eventCount() -> Int {
-        queue.sync {
-            events.count
-        }
+        if DispatchQueue.getSpecific(key: queueKey) == true { return events.count }
+        return queue.sync { events.count }
     }
 
     func clear() {
         queue.async(flags: .barrier) { [weak self] in
             guard let self = self else { return }
             self.events.removeAll()
+            self.eventWeights.removeAll()
+            self.retainedBytes = 0
             try? FileManager.default.removeItem(at: self.fileURL)
         }
     }
@@ -109,8 +147,9 @@ final class FileEventStorage: EventStorage {
             guard FileManager.default.fileExists(atPath: self.fileURL.path) else { return }
 
             do {
-                let data = try Data(contentsOf: self.fileURL)
+                guard let data = JSONSafety.readCache(self.fileURL) else { return }
                 self.events = try JSONDecoder().decode([MGMEvent].self, from: data)
+                self.rebuildWeights()
             } catch {
                 // If we can't load, start fresh
                 self.events = []
@@ -118,10 +157,22 @@ final class FileEventStorage: EventStorage {
         }
     }
 
+    private var saveQueued = false // Only accessed on the storage barrier queue.
+    private func scheduleSaveToDisk() {
+        guard !saveQueued else { return }
+        saveQueued = true
+        queue.async(flags: .barrier) { [weak self] in
+            guard let self else { return }
+            self.saveQueued = false
+            self.saveToDisk()
+        }
+    }
+
     private func saveToDisk() {
         // Called within barrier queue
         do {
             let data = try JSONEncoder().encode(events)
+            guard data.count <= JSONSafety.maxBytes else { return }
             try data.write(to: fileURL, options: .atomic)
         } catch {
             // Silently fail - we'll lose events but won't crash the app
@@ -133,29 +184,66 @@ final class FileEventStorage: EventStorage {
 final class InMemoryEventStorage: EventStorage {
     private var events: [MGMEvent] = []
     private let queue = DispatchQueue(label: "com.mostlygoodmetrics.memory-storage", attributes: .concurrent)
+    private let queueKey = DispatchSpecificKey<Bool>()
     private let maxEvents: Int
+    private var eventWeights: [Int] = []
+    private var retainedBytes = 0
+    private let admissionLock = NSLock()
+    private var pendingBytes = 0
+
+    private func admit(_ weight: Int) -> Bool {
+        admissionLock.lock()
+        defer { admissionLock.unlock() }
+        guard weight <= EventMemoryBudget.maxBytes,
+              pendingBytes + weight <= EventMemoryBudget.maxBytes * 4 else { return false }
+        pendingBytes += weight
+        return true
+    }
+
+    private func releaseAdmission(_ weight: Int) {
+        admissionLock.lock()
+        pendingBytes -= weight
+        admissionLock.unlock()
+    }
+
+    private func append(_ event: MGMEvent, weight: Int) {
+        guard weight <= EventMemoryBudget.maxBytes else { return }
+        events.append(event)
+        eventWeights.append(weight)
+        retainedBytes += weight
+        while events.count > maxEvents || retainedBytes > EventMemoryBudget.maxBytes {
+            events.removeFirst()
+            retainedBytes -= eventWeights.removeFirst()
+        }
+    }
+
+    private func rebuildWeights() {
+        let previous = events
+        events = []
+        eventWeights = []
+        retainedBytes = 0
+        for event in previous { append(event, weight: EventMemoryBudget.weight(event)) }
+    }
 
     init(maxEvents: Int = 10000) {
-        self.maxEvents = maxEvents
+        self.maxEvents = max(0, maxEvents)
+        queue.setSpecific(key: queueKey, value: true)
     }
 
     func store(event: MGMEvent, completion: ((Int) -> Void)?) {
+        let weight = EventMemoryBudget.weight(event)
+        guard admit(weight) else { return }
         queue.async(flags: .barrier) { [weak self] in
             guard let self = self else { return }
-            self.events.append(event)
-
-            if self.events.count > self.maxEvents {
-                self.events.removeFirst(self.events.count - self.maxEvents)
-            }
-
+            defer { self.releaseAdmission(weight) }
+            self.append(event, weight: weight)
             completion?(self.events.count)
         }
     }
 
     func fetchEvents(limit: Int) -> [MGMEvent] {
-        queue.sync {
-            Array(events.prefix(limit))
-        }
+        if DispatchQueue.getSpecific(key: queueKey) == true { return Array(events.prefix(max(0, limit))) }
+        return queue.sync { Array(events.prefix(max(0, limit))) }
     }
 
     func removeEvents(_ eventsToRemove: [MGMEvent]) {
@@ -166,18 +254,21 @@ final class InMemoryEventStorage: EventStorage {
             self.events.removeAll { event in
                 removeSet.contains(event.clientEventId)
             }
+            self.rebuildWeights()
         }
     }
 
     func eventCount() -> Int {
-        queue.sync {
-            events.count
-        }
+        if DispatchQueue.getSpecific(key: queueKey) == true { return events.count }
+        return queue.sync { events.count }
     }
 
     func clear() {
         queue.async(flags: .barrier) { [weak self] in
-            self?.events.removeAll()
+            guard let self else { return }
+            self.events.removeAll()
+            self.eventWeights.removeAll()
+            self.retainedBytes = 0
         }
     }
 }

@@ -499,9 +499,14 @@ MostlyGoodMetrics.track("checkout", properties: [
 ```
 
 **Limits:**
-- String values: truncated to 1000 characters
-- Nesting depth: max 3 levels
-- Total properties size: max 10KB
+- String values: truncated to 1000 characters, with a 10KB UTF-8 safety ceiling before character processing
+- Nesting depth: max 3 container levels; deeper values become JSON null
+- Conversion: at most 1024 values per event; additional values are omitted
+- Total encoded properties size: max 10KB; oversized properties are omitted while the event is kept
+
+Properties are copied into bounded immutable snapshots when an event is created. Mutable Foundation arrays and dictionaries are supported, including cycles, but callers must not mutate a collection concurrently with the tracking call. A context provider that calls `track()` recursively is skipped for the nested call on that thread.
+
+Event storage retains at most the configured event count and a private conservative 1MiB memory budget, dropping oldest events when either limit is reached. Pending storage work is also bounded; overload may drop incoming analytics. Oversized or deeply nested persisted caches and experiment responses are rejected before parsing. SDK-owned network sessions stream at most 1MiB per response and admit at most eight concurrent requests; oversized responses are canceled and reported as network failures. Disk writes stay in the background and are coalesced. Readiness waits accept finite timeouts up to one day; invalid timeouts resolve immediately, expired waiters are released, and pending waits are capped at 1024. These limits protect ordinary SDK input and storage failures; consumer traps, unsynchronized concurrent mutation, and process-wide memory exhaustion remain outside an analytics SDK's recoverable boundary.
 
 ### Dynamic Global Properties
 
@@ -687,3 +692,13 @@ swift test -Xswiftc -enable-actor-data-race-checks
 ## License
 
 MIT
+
+### Host Safety Consumer Regression
+
+The Swift 6 consumer runs the exact 20,000-level property encoding reproduction in a separate optimized process, including a data-only control. It does not configure the live SDK or send events:
+
+```bash
+swift run -c release -Xswiftc -enable-testing --package-path Tests/Swift6Consumer Swift6Consumer --host-safety-control
+swift run -c release -Xswiftc -enable-testing --package-path Tests/Swift6Consumer Swift6Consumer --host-safety-only
+swift run -c release -Xswiftc -enable-testing --package-path Tests/Swift6Consumer Swift6Consumer --readiness-safety-only
+```

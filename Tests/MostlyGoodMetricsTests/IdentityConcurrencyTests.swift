@@ -43,13 +43,14 @@ final class IdentityConcurrencyTests: XCTestCase {
         )
 
         // This previously produced a String data race and a swift_release crash.
-        DispatchQueue.concurrentPerform(iterations: 2000) { index in
+        // Stay below the private retained-byte ceiling while exercising real threads.
+        DispatchQueue.concurrentPerform(iterations: 1000) { index in
             if index.isMultiple(of: 2) { client.startNewSession() }
             else { client.track("parallel") }
         }
 
         let events = storage.fetchEvents(limit: 2000)
-        XCTAssertEqual(events.count, 1000)
+        XCTAssertEqual(events.count, 500)
         XCTAssertTrue(events.allSatisfy { UUID(uuidString: $0.sessionId ?? "") != nil })
         XCTAssertEqual(Set(events.map(\.clientEventId)).count, events.count)
     }
