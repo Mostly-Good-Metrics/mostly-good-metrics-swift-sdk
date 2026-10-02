@@ -5,6 +5,10 @@ import UIKit
 import AppKit
 #endif
 
+/// Flush result callback, delivered asynchronously on the main actor.
+/// To update another actor, explicitly schedule a task on that actor.
+public typealias MGMFlushCompletion = @MainActor @Sendable (Result<Void, MGMError>) -> Void
+
 /// The main client for tracking analytics events with MostlyGoodMetrics
 public final class MostlyGoodMetrics {
     /// Shared instance for convenience (must call `configure` first)
@@ -1053,13 +1057,13 @@ public final class MostlyGoodMetrics {
     /// Manually flushes all pending events to the server
     /// - Parameter completion: Optional completion handler, always delivered
     ///   asynchronously on the main queue so MainActor-isolated UI callbacks are safe.
-    public func flush(completion: ((Result<Void, MGMError>) -> Void)? = nil) {
+    public func flush(completion: MGMFlushCompletion? = nil) {
         flushQueue.async { [weak self] in
             self?.performFlush(completion: completion)
         }
     }
 
-    private func performFlush(completion: ((Result<Void, MGMError>) -> Void)?) {
+    private func performFlush(completion: MGMFlushCompletion?) {
         guard !isOptedOut else {
             debugLog("Opted out - skipping flush")
             deliverFlushCompletion(completion, result: .success(()))
@@ -1110,7 +1114,7 @@ public final class MostlyGoodMetrics {
     private func finishFlush(
         _ result: Result<Void, MGMError>,
         events: [MGMEvent],
-        completion: ((Result<Void, MGMError>) -> Void)?
+        completion: MGMFlushCompletion?
     ) {
         isFlushing = false
 
@@ -1142,7 +1146,7 @@ public final class MostlyGoodMetrics {
     }
 
     private func deliverFlushCompletion(
-        _ completion: ((Result<Void, MGMError>) -> Void)?,
+        _ completion: MGMFlushCompletion?,
         result: Result<Void, MGMError>
     ) {
         guard let completion else { return }

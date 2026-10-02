@@ -51,6 +51,11 @@ jobs:
       - name: Optimized Swift 6 Consumer Regression
         run: swift run -c release -Xswiftc -enable-testing --package-path Tests/Swift6Consumer --scratch-path .build/swift6-consumer-release Swift6Consumer
 
+      - name: Swift 6 Flush Actor Contract Compile Regression
+        run: |
+          bash Tests/Swift6CompileFailures/check.sh debug
+          bash Tests/Swift6CompileFailures/check.sh release
+
       - name: Main-Thread Performance Regression
         env:
           MGM_RUN_PERFORMANCE_TESTS: "1"

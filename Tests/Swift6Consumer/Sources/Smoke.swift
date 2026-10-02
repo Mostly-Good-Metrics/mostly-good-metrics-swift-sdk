@@ -38,10 +38,14 @@ struct Swift6Consumer {
                 continuation.resume()
             }
         }
+        let observer = FlushObserver()
+        await observer.flush(using: FlushClientTransfer(client: client))
+        let observerCount = await observer.completionCount
+        precondition(observerCount == 1, "Custom actor did not receive its explicit completion hop")
         timeout.cancel()
         withExtendedLifetime(client) {}
         precondition(completed)
-        print("Swift 6 MainActor flush callback passed")
+        print("Swift 6 inline MainActor completion and explicit custom-actor hop passed")
     }
 }
 
@@ -58,5 +62,35 @@ final class NoNetworkClient: NetworkClientProtocol {
 
     func fetchExperimentConfigs(completion: @escaping (Result<[MGMExperimentConfig], MGMError>) -> Void) {
         completion(.success([]))
+    }
+}
+
+// The injected client has no timers or lifecycle observers; its empty flushes
+// serialize their state internally. This fixture-only transfer does not declare
+// the public SDK client Sendable.
+private struct FlushClientTransfer: @unchecked Sendable {
+    let client: MostlyGoodMetrics
+}
+
+private actor FlushObserver {
+    private(set) var completionCount = 0
+
+    func flush(using transfer: FlushClientTransfer) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // The SDK's contextual type must make this inline callback MainActor
+            // isolated even though it is created inside another actor.
+            transfer.client.flush { result in
+                MainActor.assertIsolated()
+                if case .failure(let error) = result {
+                    fatalError("Unexpected custom-actor flush error: \(error)")
+                }
+                Task { await self.recordCompletion(continuation) }
+            }
+        }
+    }
+
+    private func recordCompletion(_ continuation: CheckedContinuation<Void, Never>) {
+        completionCount += 1
+        continuation.resume()
     }
 }

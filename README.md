@@ -584,13 +584,44 @@ Output example:
 
 ## Thread Safety
 
-`flush(completion:)` always delivers its completion asynchronously on the main
-queue, including empty, opted-out, and already-running flushes. Callbacks created
-in a `@MainActor` context can safely update UI state. Background callers also
-receive their completion on the main queue. To reach another actor, use an
-explicit `@Sendable` callback that starts a task on that actor; do not pass a
-callback that inherits that actor's isolation. Event storage and network work stay off the
-main queue.
+`flush(completion:)` accepts `MGMFlushCompletion`, defined as
+`@MainActor @Sendable (Result<Void, MGMError>) -> Void`. Its completion always runs
+asynchronously on the main actor, including empty, opted-out, and already-running
+flushes. Inline callbacks can safely update main-actor UI state even when
+`flush()` is called from a background executor. Event storage and network work
+stay off the main queue.
+
+Existing completion variables may need the explicit `MGMFlushCompletion` type.
+If the result belongs to another actor, create a task inside the completion:
+
+```swift
+actor AnalyticsMonitor {
+    private var lastFlushSucceeded = false
+
+    @MainActor
+    func observeFlush(of client: MostlyGoodMetrics) {
+        client.flush { result in
+            let succeeded: Bool
+            switch result {
+            case .success: succeeded = true
+            case .failure: succeeded = false
+            }
+            Task { await self.recordFlush(succeeded: succeeded) }
+        }
+    }
+
+    private func recordFlush(succeeded: Bool) {
+        lastFlushSucceeded = succeeded
+    }
+}
+```
+
+SDK versions through `0.11.0` do not enforce the completion's actor contract and
+may invoke it off main. For those versions, use an explicit `@Sendable` outer
+closure with `Task { @MainActor in ... }` for UI access. That workaround also
+works with the corrected API. Directly passing a closure isolated to another
+actor is incompatible with the corrected API; hop to that actor inside the
+completion instead.
 
 `contextProvider` must support synchronous and potentially concurrent calls on
 the tracking caller. It must not directly read main-actor UI state. See the
@@ -633,7 +664,10 @@ MGM_RUN_PERFORMANCE_TESTS=1 swift test -c release \
 ### Actor-Isolation Regression Tests
 
 CI runs the full suite with actor runtime checks, a Swift 6 consumer,
-Thread Sanitizer concurrency regressions, and an iOS Simulator run. These checks trap when an actor-isolated callback executes on the wrong
+Thread Sanitizer concurrency regressions, and an iOS Simulator run. It also
+requires a Swift 6 consumer that mutates another actor inside a flush completion
+to fail compilation with the expected isolation diagnostic, in debug and
+optimized builds. These checks trap when an actor-isolated callback executes on the wrong
 queue; ordinary tests can otherwise pass without exposing the crash:
 
 ```bash
