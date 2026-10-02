@@ -499,21 +499,48 @@ MostlyGoodMetrics.track("checkout", properties: [
 
 ### Dynamic Global Properties
 
-Use `contextProvider` for properties that can change while the app is running,
-such as the active workspace, subscription state, or current screen. The closure
-is evaluated for every event and its values are never persisted:
+`contextProvider` is a synchronous `@Sendable` callback. It runs on whichever
+executor calls `track()`, including background execution, and may be called
+concurrently. Capture immutable Sendable values or read a synchronized store;
+do not directly read SwiftUI or other actor-isolated state. Return value
+snapshots rather than shared mutable objects.
+
+Read actor-isolated values before creating the provider:
 
 ```swift
-let config = MGMConfiguration(
-    apiKey: "mgm_proj_your_api_key",
-    contextProvider: {
-        [
-            "organization_id": Session.shared.organizationId,
-            "subscription_tier": Session.shared.subscriptionTier
-        ]
-    }
-)
+@MainActor
+func configureAnalytics(organizationID: String, buildChannel: String) {
+    let config = MGMConfiguration(
+        apiKey: "mgm_proj_your_api_key",
+        contextProvider: { @Sendable in
+            ["organization_id": organizationID, "build_channel": buildChannel]
+        }
+    )
+    MostlyGoodMetrics.configure(with: config)
+}
 ```
+
+These snapshots retain their initial values. For UI values that change during a
+session, update super properties from the actor that owns that state and leave
+those keys out of the provider; provider values override super properties.
+Alternatively, use a synchronized Sendable store to return current snapshots.
+The provider cannot asynchronously fetch main-actor state for the current event.
+Its returned values are evaluated per event and are not persisted as super properties.
+
+#### Swift 6 migration
+
+SDK versions through `0.11.0` do not enforce this callback contract. The explicit
+`@Sendable` closure above is the immediate workaround for those versions and also
+works with the corrected SDK. The corrected SDK requires `@Sendable` on both the
+configuration property and initializer parameter. Existing provider variables
+may need the explicit type `@Sendable () -> [String: Any]`, and unsafe captures
+may now produce compiler errors. Replace those captures with immutable typed
+values or genuinely synchronized state. A captured `[String: Any]` dictionary
+is not itself Sendable.
+
+`@Sendable` does not synchronize mutable captures. Suppressing concurrency
+diagnostics or wrapping `track()` in `do/catch` cannot prevent an executor
+assertion from terminating the app.
 
 Collision precedence is explicit: persisted super properties < dynamic context <
 event properties < MGM system properties. MGM-owned `$` keys are reserved and
@@ -560,15 +587,18 @@ Output example:
 `flush(completion:)` always delivers its completion asynchronously on the main
 queue, including empty, opted-out, and already-running flushes. Callbacks created
 in a `@MainActor` context can safely update UI state. Background callers also
-receive their completion on the main queue; a callback isolated to another actor
-must explicitly hop to that actor. Event storage and network work stay off the
+receive their completion on the main queue. To reach another actor, use an
+explicit `@Sendable` callback that starts a task on that actor; do not pass a
+callback that inherits that actor's isolation. Event storage and network work stay off the
 main queue.
 
-`contextProvider` runs synchronously on the thread calling `track()`. When it
-reads main-actor UI state, call `track()` from the main actor. For tracking from
-multiple threads, supply a provider that safely supports those callers.
+`contextProvider` must support synchronous and potentially concurrent calls on
+the tracking caller. It must not directly read main-actor UI state. See the
+Swift 6 migration guidance above.
 
-The SDK is fully thread-safe. All public methods can be called from any thread:
+Tracking can run from background callers when provider captures and supplied
+properties are safe for those callers. Configure once at app startup before
+other SDK calls; do not reconfigure the shared instance concurrently.
 
 ```swift
 // Safe to call from any thread
@@ -586,9 +616,10 @@ DispatchQueue.main.async {
 - `track()` remains a synchronous-looking API but does not wait for storage I/O; timestamps, identity, super properties, and dynamic context are captured on the caller's thread
 - Flush operations are serialized to prevent race conditions
 - Storage writes use serialized barriers and atomic file replacement
-- All configuration and state management is protected with proper synchronization
+- Identity/session snapshots, flush state, and rate-limit backoff use locks
+- Providers must synchronize their own mutable state and return safe snapshots
 
-> **Note:** While the SDK is thread-safe, it's recommended to call `configure()` once at app launch on the main thread before making other SDK calls.
+> **Note:** Configure once at app launch on the main thread before making other SDK calls.
 
 ### Main-Thread Performance Regression Test
 

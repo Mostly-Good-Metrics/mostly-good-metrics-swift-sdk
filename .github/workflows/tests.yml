@@ -43,10 +43,13 @@ jobs:
         run: swift test --scratch-path .build/actor-checks -Xswiftc -enable-actor-data-race-checks
 
       - name: Thread Sanitizer Concurrency Regressions
-        run: swift test --scratch-path .build/thread-sanitizer --sanitize=thread --filter 'FlushConcurrencyTests|NetworkConcurrencyTests'
+        run: swift test --scratch-path .build/thread-sanitizer --sanitize=thread --filter 'FlushConcurrencyTests|NetworkConcurrencyTests|IdentityConcurrencyTests|ContextProviderConcurrencyTests'
 
       - name: Swift 6 Consumer Regression
         run: swift run --package-path Tests/Swift6Consumer --scratch-path .build/swift6-consumer Swift6Consumer
+
+      - name: Optimized Swift 6 Consumer Regression
+        run: swift run -c release -Xswiftc -enable-testing --package-path Tests/Swift6Consumer --scratch-path .build/swift6-consumer-release Swift6Consumer
 
       - name: Main-Thread Performance Regression
         env:
@@ -128,6 +131,8 @@ jobs:
             -destination "platform=iOS Simulator,id=$DEVICE_ID" \
             -only-testing:MostlyGoodMetricsTests/FlushConcurrencyTests \
             -only-testing:MostlyGoodMetricsTests/NetworkConcurrencyTests \
+            -only-testing:MostlyGoodMetricsTests/IdentityConcurrencyTests \
+            -only-testing:MostlyGoodMetricsTests/ContextProviderConcurrencyTests \
             OTHER_SWIFT_FLAGS='$(inherited) -enable-actor-data-race-checks' \
             -skipPackagePluginValidation
 

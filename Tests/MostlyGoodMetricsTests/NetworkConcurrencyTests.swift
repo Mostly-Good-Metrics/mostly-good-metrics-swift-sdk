@@ -109,25 +109,29 @@ final class NetworkConcurrencyTests: XCTestCase {
         // Keep independent readers running while URLSession delivers 429 writes.
         // Reader callbacks deliberately avoid expectation locks, which could
         // accidentally order the accesses and hide a missing backoff lock.
+        // Explicit reader threads avoid concurrentPerform's core-count-limited
+        // worker pool: waiting for more workers than cores otherwise deadlocks.
+        let readerCount = 2
         let readersStarted = DispatchSemaphore(value: 0)
         let stopReaders = DispatchSemaphore(value: 0)
-        defer { for _ in 0..<8 { stopReaders.signal() } }
+        defer { for _ in 0..<readerCount { stopReaders.signal() } }
         let readersFinished = expectation(description: "Concurrent readers finished")
-        DispatchQueue.global().async {
-            DispatchQueue.concurrentPerform(iterations: 8) { _ in
+        readersFinished.expectedFulfillmentCount = readerCount
+        for _ in 0..<readerCount {
+            Thread.detachNewThread {
                 readersStarted.signal()
                 while stopReaders.wait(timeout: .now()) != .success {
                     network.sendEvents(events, context: nil) { @Sendable _ in }
                 }
+                readersFinished.fulfill()
             }
-            readersFinished.fulfill()
         }
-        for _ in 0..<8 {
+        for _ in 0..<readerCount {
             XCTAssertEqual(readersStarted.wait(timeout: .now() + 5), .success)
         }
         callbacks.isSuspended = false
         wait(for: [completed], timeout: 5)
-        for _ in 0..<8 { stopReaders.signal() }
+        for _ in 0..<readerCount { stopReaders.signal() }
         wait(for: [readersFinished], timeout: 5)
     }
 

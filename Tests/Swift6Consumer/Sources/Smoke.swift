@@ -7,6 +7,8 @@ struct Swift6Consumer {
     // checks are enabled by Swift 6 even without the test compiler flag.
     @MainActor
     static func main() async {
+        await verifyContextProviders()
+        if CommandLine.arguments.contains("--context-provider-only") { return }
         let configuration = MGMConfiguration(
             apiKey: "test", trackAppLifecycleEvents: false,
             experimentMode: .local,
@@ -43,7 +45,7 @@ struct Swift6Consumer {
     }
 }
 
-private final class NoNetworkClient: NetworkClientProtocol {
+final class NoNetworkClient: NetworkClientProtocol {
     func sendEvents(_ events: [MGMEvent], context: MGMEventContext?,
                     completion: @escaping (Result<Void, MGMError>) -> Void) {
         preconditionFailure("The empty consumer smoke test must not send events")

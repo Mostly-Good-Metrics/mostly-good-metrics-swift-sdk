@@ -97,11 +97,20 @@ public final class MostlyGoodMetrics {
         }
     }
 
+    private let identityLock = NSLock()
+    private var _userId: String?
+    private var _anonymousId: String
+    private var _sessionId: String
+
     /// Current user ID (persisted across sessions)
     public var userId: String? {
-        didSet {
-            if let userId = userId {
-                UserDefaults.standard.set(userId, forKey: "MGM_userId")
+        get { identityLock.withLock { _userId } }
+        set {
+            identityLock.withLock { _userId = newValue }
+            // UserDefaults can synchronously invoke observers on other executors.
+            // Never hold an SDK lock across those callbacks.
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: "MGM_userId")
             } else {
                 UserDefaults.standard.removeObject(forKey: "MGM_userId")
             }
@@ -109,16 +118,29 @@ public final class MostlyGoodMetrics {
     }
 
     /// Anonymous ID (auto-generated, persisted across sessions)
-    /// Format: $anon_xxxxxxxxxxxx (12 random alphanumeric chars)
-    public private(set) var anonymousId: String
+    /// Format: $anon_xxxxxxxxxxxx (12 random alphanumeric characters)
+    public private(set) var anonymousId: String {
+        get { identityLock.withLock { _anonymousId } }
+        set {
+            identityLock.withLock { _anonymousId = newValue }
+            UserDefaults.standard.set(newValue, forKey: Self.anonymousIdKey)
+        }
+    }
 
     /// Current session ID (generated per app launch)
-    public private(set) var sessionId: String
+    public private(set) var sessionId: String {
+        get { identityLock.withLock { _sessionId } }
+        set { identityLock.withLock { _sessionId = newValue } }
+    }
+
+    /// Capture related identity values together without holding a lock across
+    /// a context provider, storage operation, or network/experiment callback.
+    private var identitySnapshot: (userId: String, anonymousId: String, sessionId: String) {
+        identityLock.withLock { (_userId ?? _anonymousId, _anonymousId, _sessionId) }
+    }
 
     /// The effective user ID to use in events (identified user or anonymous)
-    private var effectiveUserId: String {
-        userId ?? anonymousId
-    }
+    private var effectiveUserId: String { identitySnapshot.userId }
 
     /// Whether the SDK is currently sending events
     public private(set) var isFlushing: Bool {
@@ -176,13 +198,13 @@ public final class MostlyGoodMetrics {
         self.networkClient = NetworkClient(configuration: configuration)
 
         // Restore or generate user ID
-        self.userId = UserDefaults.standard.string(forKey: "MGM_userId")
+        self._userId = UserDefaults.standard.string(forKey: "MGM_userId")
 
         // Initialize or restore anonymous ID
-        self.anonymousId = Self.initializeAnonymousId()
+        self._anonymousId = Self.initializeAnonymousId()
 
         // Generate new session ID
-        self.sessionId = UUID().uuidString
+        self._sessionId = UUID().uuidString
 
         // Restore persisted opt-out choice (falls back to the configured default)
         self._isOptedOut = Self.initialOptOutState(configuration: configuration)
@@ -214,9 +236,9 @@ public final class MostlyGoodMetrics {
         self.storage = storage
         self.networkClient = NetworkClient(configuration: configuration)
 
-        self.userId = UserDefaults.standard.string(forKey: "MGM_userId")
-        self.anonymousId = Self.initializeAnonymousId()
-        self.sessionId = UUID().uuidString
+        self._userId = UserDefaults.standard.string(forKey: "MGM_userId")
+        self._anonymousId = Self.initializeAnonymousId()
+        self._sessionId = UUID().uuidString
         self._isOptedOut = Self.initialOptOutState(configuration: configuration)
 
         startFlushTimer()
@@ -232,9 +254,9 @@ public final class MostlyGoodMetrics {
         self.storage = storage
         self.networkClient = networkClient
 
-        self.userId = nil
-        self.anonymousId = Self.initializeAnonymousId()
-        self.sessionId = UUID().uuidString
+        self._userId = nil
+        self._anonymousId = Self.initializeAnonymousId()
+        self._sessionId = UUID().uuidString
         self._isOptedOut = Self.initialOptOutState(configuration: configuration)
 
         // Skip timers and lifecycle observers for test instances
@@ -256,9 +278,9 @@ public final class MostlyGoodMetrics {
         self.storage = storage
         self.networkClient = networkClient
 
-        self.userId = UserDefaults.standard.string(forKey: "MGM_userId")
-        self.anonymousId = Self.initializeAnonymousId()
-        self.sessionId = UUID().uuidString
+        self._userId = UserDefaults.standard.string(forKey: "MGM_userId")
+        self._anonymousId = Self.initializeAnonymousId()
+        self._sessionId = UUID().uuidString
         self._isOptedOut = Self.initialOptOutState(configuration: configuration)
 
         // Don't auto-load experiments if we want to test the loading flow manually.
@@ -322,8 +344,9 @@ public final class MostlyGoodMetrics {
         }
 
         var event = MGMEvent(name: name, properties: mergedProperties.isEmpty ? nil : mergedProperties)
-        event.userId = effectiveUserId
-        event.sessionId = sessionId
+        let identity = identitySnapshot
+        event.userId = identity.userId
+        event.sessionId = identity.sessionId
         event.platform = currentPlatform
         event.appVersion = appVersion
         event.appBuildNumber = appBuildNumber
@@ -418,7 +441,6 @@ public final class MostlyGoodMetrics {
     @discardableResult
     public func resetAnonymousId() -> String {
         let newId = Self.generateAnonymousId()
-        UserDefaults.standard.set(newId, forKey: Self.anonymousIdKey)
         self.anonymousId = newId
 
         // Local experiment assignments belong to the previous identity - clear
@@ -721,8 +743,9 @@ public final class MostlyGoodMetrics {
         let generation = experimentsFetchGeneration
         experimentsLock.unlock()
 
-        let requestedUserId = effectiveUserId
-        networkClient.fetchExperiments(userId: requestedUserId, anonymousId: anonymousId) { [weak self] result in
+        let identity = identitySnapshot
+        let requestedUserId = identity.userId
+        networkClient.fetchExperiments(userId: requestedUserId, anonymousId: identity.anonymousId) { [weak self] result in
             guard let self = self else { return }
 
             switch result {
@@ -1060,13 +1083,14 @@ public final class MostlyGoodMetrics {
         debugLog("Flushing \(events.count) events")
 
         let collectDeviceProperties = configuration.collectDeviceProperties
+        let identity = identitySnapshot
         let context = MGMEventContext(
             platform: currentPlatform,
             appVersion: appVersion,
             appBuildNumber: appBuildNumber,
             osVersion: osVersion,
-            userId: effectiveUserId,
-            sessionId: sessionId,
+            userId: identity.userId,
+            sessionId: identity.sessionId,
             environment: configuration.environment,
             deviceManufacturer: collectDeviceProperties ? deviceManufacturer : nil,
             locale: collectDeviceProperties ? currentLocale : nil,
