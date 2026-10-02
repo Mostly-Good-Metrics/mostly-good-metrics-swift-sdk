@@ -367,10 +367,13 @@ final class NetworkClient: NetworkClientProtocol {
 
     private func parseRetryAfter(from response: HTTPURLResponse) -> TimeInterval {
         if let retryAfterString = response.value(forHTTPHeaderField: "Retry-After"),
-           let retryAfter = Double(retryAfterString) {
+           let retryAfter = Double(retryAfterString),
+           retryAfter.isFinite, retryAfter >= 0, retryAfter <= 24 * 60 * 60 {
             return retryAfter
         }
-        return 60 // Default to 60 seconds if not specified
+        // Malformed or excessive backoff must not crash the app or disable
+        // analytics indefinitely. Accept at most one day; otherwise retry in a minute.
+        return 60
     }
 
     private func debugLog(_ message: String) {
@@ -422,7 +425,10 @@ public enum MGMError: Error, LocalizedError {
         case .forbidden(let message):
             return "Forbidden: \(message)"
         case .rateLimited(let retryAfter):
-            return "Rate limited. Retry after \(Int(retryAfter)) seconds"
+            guard let seconds = Int(exactly: retryAfter.rounded(.towardZero)), seconds >= 0 else {
+                return "Rate limited. Retry later"
+            }
+            return "Rate limited. Retry after \(seconds) seconds"
         case .serverError(let code, let message):
             return "Server error (\(code)): \(message)"
         case .unexpectedStatusCode(let code):

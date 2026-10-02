@@ -450,6 +450,10 @@ On macOS (including Mac Catalyst apps), window focus changes happen frequently (
 - **Automatic context** - Every event includes platform, OS version, device info, locale, timezone, etc.
 - **Dynamic context** - Context like app version and build number are collected at event time
 
+Rate-limit responses accept finite, nonnegative `Retry-After` intervals up to
+one day. Missing, malformed, or excessive intervals fall back to 60 seconds;
+rate-limited events remain queued for retry.
+
 ## Event Naming
 
 Event names must:

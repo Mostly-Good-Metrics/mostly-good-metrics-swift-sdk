@@ -208,4 +208,58 @@ final class FlushConcurrencyTests: XCTestCase {
         XCTAssertEqual(network.sendCount, 1)
     }
 
+
+    private final class PausingRemovalStorage: EventStorage {
+        private let storage = InMemoryEventStorage()
+        let removing: XCTestExpectation
+        let allowRemoval = DispatchSemaphore(value: 0)
+
+        init(removing: XCTestExpectation) { self.removing = removing }
+        func store(event: MGMEvent, completion: ((Int) -> Void)?) {
+            storage.store(event: event, completion: completion)
+        }
+        func fetchEvents(limit: Int) -> [MGMEvent] { storage.fetchEvents(limit: limit) }
+        func eventCount() -> Int { storage.eventCount() }
+        func clear() { storage.clear() }
+        func removeEvents(_ events: [MGMEvent]) {
+            removing.fulfill()
+            guard allowRemoval.wait(timeout: .now() + 5) == .success else {
+                XCTFail("Test did not release storage removal")
+                return
+            }
+            storage.removeEvents(events)
+        }
+    }
+
+    @MainActor
+    func testFlushRequestsDuringBatchCleanupDoNotResendTheBatch() {
+        let removing = expectation(description: "Batch cleanup started")
+        let storage = PausingRemovalStorage(removing: removing)
+        storage.store(event: MGMEvent(name: "queued"))
+        let started = expectation(description: "Only one batch started")
+        let network = ControlledNetworkClient(started: started)
+        let client = MostlyGoodMetrics(
+            configuration: MGMConfiguration(apiKey: "test"), storage: storage, networkClient: network
+        )
+        let completed = expectation(description: "All flush calls completed")
+        completed.expectedFulfillmentCount = 201
+        client.flush { _ in completed.fulfill() }
+        wait(for: [started], timeout: 5)
+        DispatchQueue.global().async { network.complete(.success(())) }
+        wait(for: [removing], timeout: 5)
+        defer { storage.allowRemoval.signal() }
+
+        // Network completion is actively cleaning up the batch while callers
+        // inspect public flush state and enqueue more flush requests.
+        DispatchQueue.concurrentPerform(iterations: 200) { _ in
+            _ = client.isFlushing
+            client.flush { _ in completed.fulfill() }
+        }
+        storage.allowRemoval.signal()
+        wait(for: [completed], timeout: 5)
+        XCTAssertEqual(network.sendCount, 1)
+        XCTAssertEqual(storage.eventCount(), 0)
+        XCTAssertFalse(client.isFlushing)
+    }
+
 }
