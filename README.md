@@ -450,6 +450,10 @@ On macOS (including Mac Catalyst apps), window focus changes happen frequently (
 - **Automatic context** - Every event includes platform, OS version, device info, locale, timezone, etc.
 - **Dynamic context** - Context like app version and build number are collected at event time
 
+Rate-limit responses accept finite, nonnegative `Retry-After` intervals up to
+one day. Missing, malformed, or excessive intervals fall back to 60 seconds;
+rate-limited events remain queued for retry.
+
 ## Event Naming
 
 Event names must:
@@ -495,21 +499,48 @@ MostlyGoodMetrics.track("checkout", properties: [
 
 ### Dynamic Global Properties
 
-Use `contextProvider` for properties that can change while the app is running,
-such as the active workspace, subscription state, or current screen. The closure
-is evaluated for every event and its values are never persisted:
+`contextProvider` is a synchronous `@Sendable` callback. It runs on whichever
+executor calls `track()`, including background execution, and may be called
+concurrently. Capture immutable Sendable values or read a synchronized store;
+do not directly read SwiftUI or other actor-isolated state. Return value
+snapshots rather than shared mutable objects.
+
+Read actor-isolated values before creating the provider:
 
 ```swift
-let config = MGMConfiguration(
-    apiKey: "mgm_proj_your_api_key",
-    contextProvider: {
-        [
-            "organization_id": Session.shared.organizationId,
-            "subscription_tier": Session.shared.subscriptionTier
-        ]
-    }
-)
+@MainActor
+func configureAnalytics(organizationID: String, buildChannel: String) {
+    let config = MGMConfiguration(
+        apiKey: "mgm_proj_your_api_key",
+        contextProvider: { @Sendable in
+            ["organization_id": organizationID, "build_channel": buildChannel]
+        }
+    )
+    MostlyGoodMetrics.configure(with: config)
+}
 ```
+
+These snapshots retain their initial values. For UI values that change during a
+session, update super properties from the actor that owns that state and leave
+those keys out of the provider; provider values override super properties.
+Alternatively, use a synchronized Sendable store to return current snapshots.
+The provider cannot asynchronously fetch main-actor state for the current event.
+Its returned values are evaluated per event and are not persisted as super properties.
+
+#### Swift 6 migration
+
+SDK versions through `0.11.0` do not enforce this callback contract. The explicit
+`@Sendable` closure above is the immediate workaround for those versions and also
+works with the corrected SDK. The corrected SDK requires `@Sendable` on both the
+configuration property and initializer parameter. Existing provider variables
+may need the explicit type `@Sendable () -> [String: Any]`, and unsafe captures
+may now produce compiler errors. Replace those captures with immutable typed
+values or genuinely synchronized state. A captured `[String: Any]` dictionary
+is not itself Sendable.
+
+`@Sendable` does not synchronize mutable captures. Suppressing concurrency
+diagnostics or wrapping `track()` in `do/catch` cannot prevent an executor
+assertion from terminating the app.
 
 Collision precedence is explicit: persisted super properties < dynamic context <
 event properties < MGM system properties. MGM-owned `$` keys are reserved and
@@ -553,7 +584,52 @@ Output example:
 
 ## Thread Safety
 
-The SDK is fully thread-safe. All public methods can be called from any thread:
+`flush(completion:)` accepts `MGMFlushCompletion`, defined as
+`@MainActor @Sendable (Result<Void, MGMError>) -> Void`. Its completion always runs
+asynchronously on the main actor, including empty, opted-out, and already-running
+flushes. Inline callbacks can safely update main-actor UI state even when
+`flush()` is called from a background executor. Event storage and network work
+stay off the main queue.
+
+Existing completion variables may need the explicit `MGMFlushCompletion` type.
+If the result belongs to another actor, create a task inside the completion:
+
+```swift
+actor AnalyticsMonitor {
+    private var lastFlushSucceeded = false
+
+    @MainActor
+    func observeFlush(of client: MostlyGoodMetrics) {
+        client.flush { result in
+            let succeeded: Bool
+            switch result {
+            case .success: succeeded = true
+            case .failure: succeeded = false
+            }
+            Task { await self.recordFlush(succeeded: succeeded) }
+        }
+    }
+
+    private func recordFlush(succeeded: Bool) {
+        lastFlushSucceeded = succeeded
+    }
+}
+```
+
+SDK versions through `0.11.0` do not enforce the completion's actor contract and
+may invoke it off main. For those versions, use an explicit `@Sendable` outer
+closure with `Task { @MainActor in ... }` for UI access. That workaround also
+works with the corrected API. Directly passing a closure isolated to another
+actor is incompatible with the corrected API; hop to that actor inside the
+completion instead.
+
+`contextProvider` must support synchronous and potentially concurrent calls on
+the tracking caller. It must not directly read main-actor UI state. See the
+Swift 6 migration guidance above.
+
+Tracking can run from background callers when provider captures and supplied
+properties are safe for those callers. Configure once at app startup before
+other SDK calls; do not reconfigure the shared instance concurrently.
 
 ```swift
 // Safe to call from any thread
@@ -571,9 +647,10 @@ DispatchQueue.main.async {
 - `track()` remains a synchronous-looking API but does not wait for storage I/O; timestamps, identity, super properties, and dynamic context are captured on the caller's thread
 - Flush operations are serialized to prevent race conditions
 - Storage writes use serialized barriers and atomic file replacement
-- All configuration and state management is protected with proper synchronization
+- Identity/session snapshots, flush state, and rate-limit backoff use locks
+- Providers must synchronize their own mutable state and return safe snapshots
 
-> **Note:** While the SDK is thread-safe, it's recommended to call `configure()` once at app launch on the main thread before making other SDK calls.
+> **Note:** Configure once at app launch on the main thread before making other SDK calls.
 
 ### Main-Thread Performance Regression Test
 
@@ -582,6 +659,19 @@ The 10,000-event timing test is gated so ordinary local debug test runs remain f
 ```bash
 MGM_RUN_PERFORMANCE_TESTS=1 swift test -c release \
   --filter MainThreadPerformanceTests/testTrackDoesNotBlockMainThreadOnStorage
+```
+
+### Actor-Isolation Regression Tests
+
+CI runs the full suite with actor runtime checks, a Swift 6 consumer,
+Thread Sanitizer concurrency regressions, and an iOS Simulator run. It also
+requires a Swift 6 consumer that mutates another actor inside a flush completion
+to fail compilation with the expected isolation diagnostic, in debug and
+optimized builds. These checks trap when an actor-isolated callback executes on the wrong
+queue; ordinary tests can otherwise pass without exposing the crash:
+
+```bash
+swift test -Xswiftc -enable-actor-data-race-checks
 ```
 
 ## License

@@ -1,5 +1,10 @@
 import Foundation
 
+/// Provides event properties synchronously on the executor calling `track()`.
+/// Captures and returned values must be safe for concurrent calls. Read UI state
+/// before creating the provider and capture immutable values or synchronized snapshots.
+public typealias MGMContextProvider = @Sendable () -> [String: Any]
+
 /// Configuration options for the MostlyGoodMetrics SDK
 public struct MGMConfiguration {
     /// The API key for authentication (required)
@@ -42,8 +47,10 @@ public struct MGMConfiguration {
     /// Merge precedence is: persisted super properties < context provider < event
     /// properties < SDK-owned system properties. Use this for values such as the
     /// current screen, subscription state, or active organization that can change
-    /// during a session.
-    public var contextProvider: (() -> [String: Any])?
+    /// during a session. The provider runs synchronously on the tracking caller
+    /// and may be invoked concurrently. Do not directly access actor-isolated UI
+    /// state or return shared mutable objects.
+    public var contextProvider: MGMContextProvider?
 
     /// The wrapper SDK name (e.g., "react-native", "flutter", "expo")
     /// Used by hybrid framework SDKs to identify themselves
@@ -90,7 +97,7 @@ public struct MGMConfiguration {
     ///   - enableDebugLogging: Whether to enable debug logging (defaults to false)
     ///   - trackAppLifecycleEvents: Whether to auto-track lifecycle events (defaults to true)
     ///   - existingInstallation: Whether this install existed before MGM was added (defaults to false)
-    ///   - contextProvider: Dynamic properties evaluated when each event is tracked
+    ///   - contextProvider: Sendable provider evaluated synchronously on each tracking caller; must support concurrent calls
     ///   - wrapperName: Optional wrapper SDK name (e.g., "react-native", "flutter")
     ///   - wrapperVersion: Optional wrapper SDK version
     ///   - experimentMode: How experiment variants are assigned (defaults to .server)
@@ -108,7 +115,7 @@ public struct MGMConfiguration {
         enableDebugLogging: Bool = false,
         trackAppLifecycleEvents: Bool = true,
         existingInstallation: Bool = false,
-        contextProvider: (() -> [String: Any])? = nil,
+        contextProvider: MGMContextProvider? = nil,
         wrapperName: String? = nil,
         wrapperVersion: String? = nil,
         experimentMode: MGMExperimentMode = .server,

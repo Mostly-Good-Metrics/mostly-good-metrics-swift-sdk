@@ -2,12 +2,8 @@ import XCTest
 @testable import MostlyGoodMetrics
 
 final class StorageConcurrencyTests: XCTestCase {
-    private final class ContextBox {
-        var value = "context-before"
-    }
-
     func testTrackCapturesTimestampIdentityAndPropertiesAtCallTime() {
-        let context = ContextBox()
+        let context = LockedContextValue("context-before")
         let configuration = MGMConfiguration(
             apiKey: "test",
             contextProvider: { [context] in ["context": context.value] }

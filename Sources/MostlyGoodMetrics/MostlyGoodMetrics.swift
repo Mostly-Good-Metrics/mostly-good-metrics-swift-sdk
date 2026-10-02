@@ -5,6 +5,10 @@ import UIKit
 import AppKit
 #endif
 
+/// Flush result callback, delivered asynchronously on the main actor.
+/// To update another actor, explicitly schedule a task on that actor.
+public typealias MGMFlushCompletion = @MainActor @Sendable (Result<Void, MGMError>) -> Void
+
 /// The main client for tracking analytics events with MostlyGoodMetrics
 public final class MostlyGoodMetrics {
     /// Shared instance for convenience (must call `configure` first)
@@ -97,11 +101,20 @@ public final class MostlyGoodMetrics {
         }
     }
 
+    private let identityLock = NSLock()
+    private var _userId: String?
+    private var _anonymousId: String
+    private var _sessionId: String
+
     /// Current user ID (persisted across sessions)
     public var userId: String? {
-        didSet {
-            if let userId = userId {
-                UserDefaults.standard.set(userId, forKey: "MGM_userId")
+        get { identityLock.withLock { _userId } }
+        set {
+            identityLock.withLock { _userId = newValue }
+            // UserDefaults can synchronously invoke observers on other executors.
+            // Never hold an SDK lock across those callbacks.
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: "MGM_userId")
             } else {
                 UserDefaults.standard.removeObject(forKey: "MGM_userId")
             }
@@ -109,19 +122,38 @@ public final class MostlyGoodMetrics {
     }
 
     /// Anonymous ID (auto-generated, persisted across sessions)
-    /// Format: $anon_xxxxxxxxxxxx (12 random alphanumeric chars)
-    public private(set) var anonymousId: String
-
-    /// Current session ID (generated per app launch)
-    public private(set) var sessionId: String
-
-    /// The effective user ID to use in events (identified user or anonymous)
-    private var effectiveUserId: String {
-        userId ?? anonymousId
+    /// Format: $anon_xxxxxxxxxxxx (12 random alphanumeric characters)
+    public private(set) var anonymousId: String {
+        get { identityLock.withLock { _anonymousId } }
+        set {
+            identityLock.withLock { _anonymousId = newValue }
+            UserDefaults.standard.set(newValue, forKey: Self.anonymousIdKey)
+        }
     }
 
+    /// Current session ID (generated per app launch)
+    public private(set) var sessionId: String {
+        get { identityLock.withLock { _sessionId } }
+        set { identityLock.withLock { _sessionId = newValue } }
+    }
+
+    /// Capture related identity values together without holding a lock across
+    /// a context provider, storage operation, or network/experiment callback.
+    private var identitySnapshot: (userId: String, anonymousId: String, sessionId: String) {
+        identityLock.withLock { (_userId ?? _anonymousId, _anonymousId, _sessionId) }
+    }
+
+    /// The effective user ID to use in events (identified user or anonymous)
+    private var effectiveUserId: String { identitySnapshot.userId }
+
     /// Whether the SDK is currently sending events
-    public private(set) var isFlushing: Bool = false
+    public private(set) var isFlushing: Bool {
+        get { flushStateLock.withLock { _isFlushing } }
+        set { flushStateLock.withLock { _isFlushing = newValue } }
+    }
+
+    private let flushStateLock = NSLock()
+    private var _isFlushing = false
 
     /// Lock for thread-safe access to the opt-out state
     private let optOutLock = NSLock()
@@ -170,13 +202,13 @@ public final class MostlyGoodMetrics {
         self.networkClient = NetworkClient(configuration: configuration)
 
         // Restore or generate user ID
-        self.userId = UserDefaults.standard.string(forKey: "MGM_userId")
+        self._userId = UserDefaults.standard.string(forKey: "MGM_userId")
 
         // Initialize or restore anonymous ID
-        self.anonymousId = Self.initializeAnonymousId()
+        self._anonymousId = Self.initializeAnonymousId()
 
         // Generate new session ID
-        self.sessionId = UUID().uuidString
+        self._sessionId = UUID().uuidString
 
         // Restore persisted opt-out choice (falls back to the configured default)
         self._isOptedOut = Self.initialOptOutState(configuration: configuration)
@@ -208,9 +240,9 @@ public final class MostlyGoodMetrics {
         self.storage = storage
         self.networkClient = NetworkClient(configuration: configuration)
 
-        self.userId = UserDefaults.standard.string(forKey: "MGM_userId")
-        self.anonymousId = Self.initializeAnonymousId()
-        self.sessionId = UUID().uuidString
+        self._userId = UserDefaults.standard.string(forKey: "MGM_userId")
+        self._anonymousId = Self.initializeAnonymousId()
+        self._sessionId = UUID().uuidString
         self._isOptedOut = Self.initialOptOutState(configuration: configuration)
 
         startFlushTimer()
@@ -226,9 +258,9 @@ public final class MostlyGoodMetrics {
         self.storage = storage
         self.networkClient = networkClient
 
-        self.userId = nil
-        self.anonymousId = Self.initializeAnonymousId()
-        self.sessionId = UUID().uuidString
+        self._userId = nil
+        self._anonymousId = Self.initializeAnonymousId()
+        self._sessionId = UUID().uuidString
         self._isOptedOut = Self.initialOptOutState(configuration: configuration)
 
         // Skip timers and lifecycle observers for test instances
@@ -250,9 +282,9 @@ public final class MostlyGoodMetrics {
         self.storage = storage
         self.networkClient = networkClient
 
-        self.userId = UserDefaults.standard.string(forKey: "MGM_userId")
-        self.anonymousId = Self.initializeAnonymousId()
-        self.sessionId = UUID().uuidString
+        self._userId = UserDefaults.standard.string(forKey: "MGM_userId")
+        self._anonymousId = Self.initializeAnonymousId()
+        self._sessionId = UUID().uuidString
         self._isOptedOut = Self.initialOptOutState(configuration: configuration)
 
         // Don't auto-load experiments if we want to test the loading flow manually.
@@ -316,8 +348,9 @@ public final class MostlyGoodMetrics {
         }
 
         var event = MGMEvent(name: name, properties: mergedProperties.isEmpty ? nil : mergedProperties)
-        event.userId = effectiveUserId
-        event.sessionId = sessionId
+        let identity = identitySnapshot
+        event.userId = identity.userId
+        event.sessionId = identity.sessionId
         event.platform = currentPlatform
         event.appVersion = appVersion
         event.appBuildNumber = appBuildNumber
@@ -412,7 +445,6 @@ public final class MostlyGoodMetrics {
     @discardableResult
     public func resetAnonymousId() -> String {
         let newId = Self.generateAnonymousId()
-        UserDefaults.standard.set(newId, forKey: Self.anonymousIdKey)
         self.anonymousId = newId
 
         // Local experiment assignments belong to the previous identity - clear
@@ -715,8 +747,9 @@ public final class MostlyGoodMetrics {
         let generation = experimentsFetchGeneration
         experimentsLock.unlock()
 
-        let requestedUserId = effectiveUserId
-        networkClient.fetchExperiments(userId: requestedUserId, anonymousId: anonymousId) { [weak self] result in
+        let identity = identitySnapshot
+        let requestedUserId = identity.userId
+        networkClient.fetchExperiments(userId: requestedUserId, anonymousId: identity.anonymousId) { [weak self] result in
             guard let self = self else { return }
 
             switch result {
@@ -1022,30 +1055,31 @@ public final class MostlyGoodMetrics {
     // MARK: - Flushing
 
     /// Manually flushes all pending events to the server
-    /// - Parameter completion: Optional completion handler
-    public func flush(completion: ((Result<Void, MGMError>) -> Void)? = nil) {
+    /// - Parameter completion: Optional completion handler, always delivered
+    ///   asynchronously on the main queue so MainActor-isolated UI callbacks are safe.
+    public func flush(completion: MGMFlushCompletion? = nil) {
         flushQueue.async { [weak self] in
             self?.performFlush(completion: completion)
         }
     }
 
-    private func performFlush(completion: ((Result<Void, MGMError>) -> Void)?) {
+    private func performFlush(completion: MGMFlushCompletion?) {
         guard !isOptedOut else {
             debugLog("Opted out - skipping flush")
-            completion?(.success(()))
+            deliverFlushCompletion(completion, result: .success(()))
             return
         }
 
         guard !isFlushing else {
             debugLog("Already flushing, skipping")
-            completion?(.success(()))
+            deliverFlushCompletion(completion, result: .success(()))
             return
         }
 
         let events = storage.fetchEvents(limit: configuration.maxBatchSize)
         guard !events.isEmpty else {
             debugLog("No events to flush")
-            completion?(.success(()))
+            deliverFlushCompletion(completion, result: .success(()))
             return
         }
 
@@ -1053,13 +1087,14 @@ public final class MostlyGoodMetrics {
         debugLog("Flushing \(events.count) events")
 
         let collectDeviceProperties = configuration.collectDeviceProperties
+        let identity = identitySnapshot
         let context = MGMEventContext(
             platform: currentPlatform,
             appVersion: appVersion,
             appBuildNumber: appBuildNumber,
             osVersion: osVersion,
-            userId: effectiveUserId,
-            sessionId: sessionId,
+            userId: identity.userId,
+            sessionId: identity.sessionId,
             environment: configuration.environment,
             deviceManufacturer: collectDeviceProperties ? deviceManufacturer : nil,
             locale: collectDeviceProperties ? currentLocale : nil,
@@ -1067,38 +1102,56 @@ public final class MostlyGoodMetrics {
         )
 
         networkClient.sendEvents(events, context: context) { [weak self] result in
-            guard let self = self else { return }
-
-            self.isFlushing = false
-
-            switch result {
-            case .success:
-                self.storage.removeEvents(events)
-                self.debugLog("Successfully flushed \(events.count) events")
-
-                // If there are more events, continue flushing
-                if self.storage.eventCount() > 0 {
-                    self.flushQueue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                        self?.performFlush(completion: nil)
-                    }
-                }
-                completion?(.success(()))
-
-            case .failure(let error):
-                self.debugLog("Flush failed: \(error.localizedDescription)")
-
-                // Don't remove events on failure - they'll be retried
-                // But if it's a 4xx error (except rate limit), we should drop them
-                switch error {
-                case .badRequest, .unauthorized, .forbidden:
-                    self.storage.removeEvents(events)
-                    self.debugLog("Dropped \(events.count) events due to client error")
-                default:
-                    break
-                }
-
-                completion?(.failure(error))
+            guard let self else { return }
+            // URLSession and test clients may complete on any queue (or inline).
+            // Finish the batch on the same serial queue that starts flushes.
+            self.flushQueue.async {
+                self.finishFlush(result, events: events, completion: completion)
             }
+        }
+    }
+
+    private func finishFlush(
+        _ result: Result<Void, MGMError>,
+        events: [MGMEvent],
+        completion: MGMFlushCompletion?
+    ) {
+        isFlushing = false
+
+        switch result {
+        case .success:
+            storage.removeEvents(events)
+            debugLog("Successfully flushed \(events.count) events")
+
+            if storage.eventCount() > 0 {
+                flushQueue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.performFlush(completion: nil)
+                }
+            }
+
+        case .failure(let error):
+            debugLog("Flush failed: \(error.localizedDescription)")
+
+            // Keep transient failures for retry; drop permanent client failures.
+            switch error {
+            case .badRequest, .unauthorized, .forbidden:
+                storage.removeEvents(events)
+                debugLog("Dropped \(events.count) events due to client error")
+            default:
+                break
+            }
+        }
+
+        deliverFlushCompletion(completion, result: result)
+    }
+
+    private func deliverFlushCompletion(
+        _ completion: MGMFlushCompletion?,
+        result: Result<Void, MGMError>
+    ) {
+        guard let completion else { return }
+        DispatchQueue.main.async {
+            completion(result)
         }
     }
 

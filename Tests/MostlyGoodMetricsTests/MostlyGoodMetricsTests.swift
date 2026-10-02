@@ -1248,17 +1248,17 @@ final class MostlyGoodMetricsTests: XCTestCase {
     }
 
     func testContextProviderIsEvaluatedPerEventAndHasDocumentedPrecedence() {
-        var activePlan = "context"
+        let activePlan = LockedContextValue("context")
         let config = MGMConfiguration(
             apiKey: "test_key",
-            contextProvider: { ["plan": activePlan, "organization_id": "org_123", "$sdk": "custom"] }
+            contextProvider: { ["plan": activePlan.value, "organization_id": "org_123", "$sdk": "custom"] }
         )
         let storage = InMemoryEventStorage()
         let client = MostlyGoodMetrics(configuration: config, storage: storage)
 
         client.setSuperProperty("plan", value: "super")
         client.track("first_event", properties: ["plan": "event"])
-        activePlan = "context_updated"
+        activePlan.value = "context_updated"
         client.track("second_event")
 
         let expectation = self.expectation(description: "Dynamic context is merged per event")

@@ -42,20 +42,19 @@ protocol NetworkClientProtocol {
 final class NetworkClient: NetworkClientProtocol {
     private let configuration: MGMConfiguration
     private let session: URLSession
-    private let encoder: JSONEncoder
 
-    /// Current retry-after interval from rate limiting (in seconds)
-    private var retryAfterDate: Date?
+    /// Absolute backoff deadline, in seconds since the Foundation reference date.
+    // A primitive timestamp keeps synchronization visible to Thread Sanitizer.
+    private var retryAfterDeadline: TimeInterval?
+    private let retryAfterLock = NSLock()
 
-    init(configuration: MGMConfiguration) {
+    init(configuration: MGMConfiguration, session: URLSession? = nil) {
         self.configuration = configuration
 
         let sessionConfig = URLSessionConfiguration.default
         sessionConfig.timeoutIntervalForRequest = 30
         sessionConfig.timeoutIntervalForResource = 60
-        self.session = URLSession(configuration: sessionConfig)
-
-        self.encoder = JSONEncoder()
+        self.session = session ?? URLSession(configuration: sessionConfig)
     }
 
     /// Sends a batch of events to the API
@@ -69,9 +68,12 @@ final class NetworkClient: NetworkClientProtocol {
         completion: @escaping (Result<Void, MGMError>) -> Void
     ) {
         // Check if we're still in rate limit backoff
-        if let retryAfter = retryAfterDate, Date() < retryAfter {
-            completion(.failure(.rateLimited(retryAfter: retryAfter.timeIntervalSinceNow)))
-            return
+        if let deadline = retryAfterLock.withLock({ retryAfterDeadline }) {
+            let remaining = deadline - Date.timeIntervalSinceReferenceDate
+            if remaining > 0 {
+                completion(.failure(.rateLimited(retryAfter: remaining)))
+                return
+            }
         }
 
         let url = configuration.baseURL.appendingPathComponent("v1/events")
@@ -105,7 +107,7 @@ final class NetworkClient: NetworkClientProtocol {
         let payload = MGMEventsPayload(events: events, context: context)
 
         do {
-            let jsonData = try encoder.encode(payload)
+            let jsonData = try JSONEncoder().encode(payload)
 
             // Compress with gzip if data is large enough (> 1KB)
             if jsonData.count > 1024, let compressedData = GzipCompression.compress(jsonData) {
@@ -166,7 +168,9 @@ final class NetworkClient: NetworkClientProtocol {
 
             case 429:
                 let retryAfter = self.parseRetryAfter(from: httpResponse)
-                self.retryAfterDate = Date().addingTimeInterval(retryAfter)
+                self.retryAfterLock.withLock {
+                    self.retryAfterDeadline = Date.timeIntervalSinceReferenceDate + retryAfter
+                }
                 self.debugLog("Rate limited, retry after \(retryAfter) seconds")
                 completion(.failure(.rateLimited(retryAfter: retryAfter)))
 
@@ -367,10 +371,13 @@ final class NetworkClient: NetworkClientProtocol {
 
     private func parseRetryAfter(from response: HTTPURLResponse) -> TimeInterval {
         if let retryAfterString = response.value(forHTTPHeaderField: "Retry-After"),
-           let retryAfter = Double(retryAfterString) {
+           let retryAfter = Double(retryAfterString),
+           retryAfter.isFinite, retryAfter >= 0, retryAfter <= 24 * 60 * 60 {
             return retryAfter
         }
-        return 60 // Default to 60 seconds if not specified
+        // Malformed or excessive backoff must not crash the app or disable
+        // analytics indefinitely. Accept at most one day; otherwise retry in a minute.
+        return 60
     }
 
     private func debugLog(_ message: String) {
@@ -422,7 +429,10 @@ public enum MGMError: Error, LocalizedError {
         case .forbidden(let message):
             return "Forbidden: \(message)"
         case .rateLimited(let retryAfter):
-            return "Rate limited. Retry after \(Int(retryAfter)) seconds"
+            guard let seconds = Int(exactly: retryAfter.rounded(.towardZero)), seconds >= 0 else {
+                return "Rate limited. Retry later"
+            }
+            return "Rate limited. Retry after \(seconds) seconds"
         case .serverError(let code, let message):
             return "Server error (\(code)): \(message)"
         case .unexpectedStatusCode(let code):
