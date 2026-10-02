@@ -43,8 +43,9 @@ final class NetworkClient: NetworkClientProtocol {
     private let configuration: MGMConfiguration
     private let session: URLSession
 
-    /// Current retry-after interval from rate limiting (in seconds)
-    private var retryAfterDate: Date?
+    /// Absolute backoff deadline, in seconds since the Foundation reference date.
+    // A primitive timestamp keeps synchronization visible to Thread Sanitizer.
+    private var retryAfterDeadline: TimeInterval?
     private let retryAfterLock = NSLock()
 
     init(configuration: MGMConfiguration, session: URLSession? = nil) {
@@ -67,9 +68,12 @@ final class NetworkClient: NetworkClientProtocol {
         completion: @escaping (Result<Void, MGMError>) -> Void
     ) {
         // Check if we're still in rate limit backoff
-        if let retryAfter = retryAfterLock.withLock({ retryAfterDate }), Date() < retryAfter {
-            completion(.failure(.rateLimited(retryAfter: retryAfter.timeIntervalSinceNow)))
-            return
+        if let deadline = retryAfterLock.withLock({ retryAfterDeadline }) {
+            let remaining = deadline - Date.timeIntervalSinceReferenceDate
+            if remaining > 0 {
+                completion(.failure(.rateLimited(retryAfter: remaining)))
+                return
+            }
         }
 
         let url = configuration.baseURL.appendingPathComponent("v1/events")
@@ -165,7 +169,7 @@ final class NetworkClient: NetworkClientProtocol {
             case 429:
                 let retryAfter = self.parseRetryAfter(from: httpResponse)
                 self.retryAfterLock.withLock {
-                    self.retryAfterDate = Date().addingTimeInterval(retryAfter)
+                    self.retryAfterDeadline = Date.timeIntervalSinceReferenceDate + retryAfter
                 }
                 self.debugLog("Rate limited, retry after \(retryAfter) seconds")
                 completion(.failure(.rateLimited(retryAfter: retryAfter)))
