@@ -7,30 +7,14 @@ final class NetworkConcurrencyTests: XCTestCase {
         private static var _requestCount = 0
         static var requestCount: Int { lock.withLock { _requestCount } }
         private static var retryAfter = "60"
-        private static var holdResponses = false
-        private static var pending: [RateLimitURLProtocol] = []
         private static var onRequest: (() -> Void)?
 
-        static func reset(retryAfter: String = "60", holdResponses: Bool = false,
-                          onRequest: (() -> Void)? = nil) {
+        static func reset(retryAfter: String = "60", onRequest: (() -> Void)? = nil) {
             lock.withLock {
                 _requestCount = 0
                 Self.retryAfter = retryAfter
-                Self.holdResponses = holdResponses
                 Self.onRequest = onRequest
-                pending = []
             }
-        }
-
-        static func releaseResponses() {
-            let response = lock.withLock {
-                holdResponses = false
-                onRequest = nil
-                let response = (pending, retryAfter)
-                pending = []
-                return response
-            }
-            response.0.forEach { $0.respond(retryAfter: response.1) }
         }
 
         override class func canInit(with request: URLRequest) -> Bool { true }
@@ -38,17 +22,12 @@ final class NetworkConcurrencyTests: XCTestCase {
         override func startLoading() {
             let state = Self.lock.withLock {
                 Self._requestCount += 1
-                if Self.holdResponses { Self.pending.append(self) }
-                return (Self.holdResponses, Self.retryAfter, Self.onRequest)
+                return (Self.retryAfter, Self._requestCount <= 8 ? Self.onRequest : nil)
             }
-            state.2?()
-            if !state.0 { respond(retryAfter: state.1) }
-        }
-
-        private func respond(retryAfter: String) {
+            state.1?()
             let response = HTTPURLResponse(
                 url: request.url!, statusCode: 429, httpVersion: nil,
-                headerFields: ["Retry-After": retryAfter]
+                headerFields: ["Retry-After": state.0]
             )!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocolDidFinishLoading(self)
@@ -98,11 +77,19 @@ final class NetworkConcurrencyTests: XCTestCase {
     func testRateLimitResponsesOverlapConcurrentBackoffReads() {
         let requestsStarted = expectation(description: "Initial requests waiting for responses")
         requestsStarted.expectedFulfillmentCount = 8
-        RateLimitURLProtocol.reset(holdResponses: true, onRequest: { requestsStarted.fulfill() })
+        RateLimitURLProtocol.reset(onRequest: { requestsStarted.fulfill() })
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [RateLimitURLProtocol.self]
-        let session = URLSession(configuration: sessionConfiguration)
-        defer { session.invalidateAndCancel() }
+        // Suspend completion delivery, rather than calling URLProtocol clients
+        // outside startLoading, so the stub follows Foundation lifecycle rules.
+        let callbacks = OperationQueue()
+        callbacks.maxConcurrentOperationCount = 1
+        callbacks.isSuspended = true
+        let session = URLSession(configuration: sessionConfiguration, delegate: nil, delegateQueue: callbacks)
+        defer {
+            callbacks.isSuspended = false
+            session.invalidateAndCancel()
+        }
         let network = NetworkClient(configuration: MGMConfiguration(apiKey: "test"), session: session)
         let events = [MGMEvent(name: "queued")]
         let completed = expectation(description: "All requests rate limited")
@@ -138,7 +125,7 @@ final class NetworkConcurrencyTests: XCTestCase {
         for _ in 0..<8 {
             XCTAssertEqual(readersStarted.wait(timeout: .now() + 5), .success)
         }
-        RateLimitURLProtocol.releaseResponses()
+        callbacks.isSuspended = false
         wait(for: [completed], timeout: 5)
         for _ in 0..<8 { stopReaders.signal() }
         wait(for: [readersFinished], timeout: 5)
