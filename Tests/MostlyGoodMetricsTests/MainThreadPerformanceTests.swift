@@ -72,10 +72,16 @@ final class MainThreadPerformanceTests: XCTestCase {
 
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let events = (0..<scenario.eventCount).map { MGMEvent(name: "queued_\($0)") }
-        try JSONEncoder().encode(events).write(to: fileURL, options: .atomic)
+        let cacheData = try JSONEncoder().encode(events)
+        try cacheData.write(to: fileURL, options: .atomic)
 
         let storage = FileEventStorage(maxEvents: 10_000, fileURL: fileURL)
-        XCTAssertEqual(storage.eventCount(), scenario.eventCount)
+        if cacheData.count > JSONSafety.maxBytes {
+            XCTAssertEqual(storage.eventCount(), 0, "Oversized legacy caches are rejected before parsing")
+        } else {
+            XCTAssertGreaterThan(storage.eventCount(), 0)
+            XCTAssertLessThanOrEqual(storage.eventCount(), scenario.eventCount)
+        }
 
         if scenario.cleanupCount > 0 {
             storage.removeEvents(Array(events.prefix(scenario.cleanupCount)))

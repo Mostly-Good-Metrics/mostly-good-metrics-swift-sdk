@@ -12,7 +12,25 @@ public typealias MGMFlushCompletion = @MainActor @Sendable (Result<Void, MGMErro
 /// The main client for tracking analytics events with MostlyGoodMetrics
 public final class MostlyGoodMetrics {
     /// Shared instance for convenience (must call `configure` first)
-    public private(set) static var shared: MostlyGoodMetrics?
+    private static let sharedLock = NSLock()
+    private static var sharedInstance: MostlyGoodMetrics?
+    public private(set) static var shared: MostlyGoodMetrics? {
+        get { sharedLock.withLock { sharedInstance } }
+        set {
+            var previous: MostlyGoodMetrics?
+            sharedLock.withLock {
+                previous = sharedInstance
+                sharedInstance = newValue
+            }
+            // SDK teardown and storage/delegate release may reenter SDK APIs.
+            // Keep the previous instance alive until the shared lock is released.
+            withExtendedLifetime(previous) {}
+        }
+    }
+
+    internal static func installSharedInstance(_ instance: MostlyGoodMetrics?) {
+        shared = instance
+    }
 
     private let configuration: MGMConfiguration
     private let storage: EventStorage
@@ -154,6 +172,8 @@ public final class MostlyGoodMetrics {
 
     private let flushStateLock = NSLock()
     private var _isFlushing = false
+    private var automaticFlushQueued = false
+    private let contextProviderThreadKey = "com.mostlygoodmetrics.context.\(UUID().uuidString)"
 
     /// Lock for thread-safe access to the opt-out state
     private let optOutLock = NSLock()
@@ -182,7 +202,7 @@ public final class MostlyGoodMetrics {
     @discardableResult
     public static func configure(with configuration: MGMConfiguration) -> MostlyGoodMetrics {
         let instance = MostlyGoodMetrics(configuration: configuration)
-        shared = instance
+        installSharedInstance(instance)
         return instance
     }
 
@@ -306,6 +326,14 @@ public final class MostlyGoodMetrics {
         NotificationCenter.default.removeObserver(self)
     }
 
+    private func contextPropertiesForCurrentThread() -> [String: Any]? {
+        let state = Thread.current.threadDictionary
+        guard state[contextProviderThreadKey] == nil else { return nil }
+        state[contextProviderThreadKey] = true
+        defer { state.removeObject(forKey: contextProviderThreadKey) }
+        return configuration.contextProvider?()
+    }
+
     // MARK: - Event Tracking
 
     /// Tracks an event with the given name and optional properties
@@ -331,14 +359,14 @@ public final class MostlyGoodMetrics {
         // Merge properties: persisted super properties < dynamic context < event
         // properties < system properties. System properties are always SDK-owned.
         var mergedProperties = getSuperProperties()
-        if let contextProperties = configuration.contextProvider?() {
-            for (key, value) in contextProperties {
+        if let contextProperties = contextPropertiesForCurrentThread() {
+            for (key, value) in contextProperties.prefix(PropertySnapshot.maxNodes) {
                 mergedProperties[key] = value
             }
             validateCustomPropertyKeys(contextProperties)
         }
         if let userProps = properties {
-            for (key, value) in userProps {
+            for (key, value) in userProps.prefix(PropertySnapshot.maxNodes) {
                 mergedProperties[key] = value
             }
         }
@@ -364,7 +392,7 @@ public final class MostlyGoodMetrics {
 
         storage.store(event: event) { [weak self] eventCount in
             guard let self, eventCount >= self.configuration.maxBatchSize else { return }
-            self.flush()
+            self.scheduleAutomaticFlush()
         }
         debugLog("Tracked event: \(name)")
     }
@@ -582,7 +610,7 @@ public final class MostlyGoodMetrics {
 
             var loadedWhileRegistering = false
             experimentsLock.lock()
-            if experimentsLoaded {
+            if experimentsLoaded || experimentsWaiters.count >= 1024 {
                 loadedWhileRegistering = true
             } else {
                 experimentsWaiters.append(waiter)
@@ -597,7 +625,11 @@ public final class MostlyGoodMetrics {
             // Guarantee resolution even if the fetch never completes.
             // ExperimentsWaiter makes double-resume a no-op, so racing with
             // fetch completion is safe.
-            DispatchQueue.global().asyncAfter(deadline: .now() + max(0, timeout)) {
+            let boundedTimeout = timeout.isFinite && timeout >= 0 && timeout <= 86400 ? timeout : 0
+            DispatchQueue.global().asyncAfter(deadline: .now() + boundedTimeout) { [weak self] in
+                self?.experimentsLock.withLock {
+                    self?.experimentsWaiters.removeAll { $0 === waiter }
+                }
                 waiter.resume()
             }
         }
@@ -796,6 +828,7 @@ public final class MostlyGoodMetrics {
         guard let cachedUserId = defaults.string(forKey: Self.experimentsCachedUserIdKey),
               cachedUserId == effectiveUserId,
               let data = defaults.data(forKey: Self.experimentsCacheKey),
+              JSONSafety.accepts(data),
               let variants = try? JSONDecoder().decode([String: String].self, from: data) else {
             return nil
         }
@@ -938,6 +971,7 @@ public final class MostlyGoodMetrics {
     /// The cache never expires; freshness is handled by background revalidation.
     private func loadCachedExperimentConfigs() -> [MGMExperimentConfig]? {
         guard let data = UserDefaults.standard.data(forKey: Self.localExperimentConfigsCacheKey),
+              JSONSafety.accepts(data),
               let configs = try? JSONDecoder().decode([MGMExperimentConfig].self, from: data) else {
             return nil
         }
@@ -1014,11 +1048,11 @@ public final class MostlyGoodMetrics {
     /// - Parameter properties: Dictionary of properties to set
     public func setSuperProperties(_ properties: [String: Any]) {
         var current = getSuperProperties()
-        for (key, value) in properties {
+        for (key, value) in properties.prefix(PropertySnapshot.maxNodes) {
             current[key] = value
         }
         saveSuperProperties(current)
-        debugLog("Set super properties: \(properties.keys.joined(separator: ", "))")
+        debugLog("Set super properties: \(properties.keys.prefix(PropertySnapshot.maxNodes).joined(separator: ", "))")
     }
 
     /// Removes a single super property
@@ -1040,6 +1074,7 @@ public final class MostlyGoodMetrics {
     /// - Returns: Dictionary of super properties
     public func getSuperProperties() -> [String: Any] {
         guard let data = UserDefaults.standard.data(forKey: Self.superPropertiesKey),
+              JSONSafety.accepts(data),
               let properties = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return [:]
         }
@@ -1047,7 +1082,8 @@ public final class MostlyGoodMetrics {
     }
 
     private func saveSuperProperties(_ properties: [String: Any]) {
-        if let data = try? JSONSerialization.data(withJSONObject: properties) {
+        if let snapshot = PropertySnapshot.properties(properties),
+           let data = try? JSONEncoder().encode(snapshot) {
             UserDefaults.standard.set(data, forKey: Self.superPropertiesKey)
         }
     }
@@ -1060,6 +1096,20 @@ public final class MostlyGoodMetrics {
     public func flush(completion: MGMFlushCompletion? = nil) {
         flushQueue.async { [weak self] in
             self?.performFlush(completion: completion)
+        }
+    }
+
+    private func scheduleAutomaticFlush() {
+        let shouldSchedule = flushStateLock.withLock { () -> Bool in
+            guard !automaticFlushQueued, !_isFlushing else { return false }
+            automaticFlushQueued = true
+            return true
+        }
+        guard shouldSchedule else { return }
+        flushQueue.async { [weak self] in
+            guard let self else { return }
+            defer { self.flushStateLock.withLock { self.automaticFlushQueued = false } }
+            self.performFlush(completion: nil)
         }
     }
 
@@ -1324,7 +1374,7 @@ public final class MostlyGoodMetrics {
     private func validateCustomPropertyKeys(_ properties: [String: Any]?) {
         guard let properties else { return }
 
-        for key in properties.keys where key.hasPrefix("$") {
+        for key in properties.keys.prefix(PropertySnapshot.maxNodes) where key.hasPrefix("$") {
             debugValidationWarning("Property key '\(key)' is reserved for MGM system properties. Rename it to a custom key to avoid collisions.")
         }
     }

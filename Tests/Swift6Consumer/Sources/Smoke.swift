@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 @testable import MostlyGoodMetrics
 
 @main
@@ -7,6 +8,13 @@ struct Swift6Consumer {
     // checks are enabled by Swift 6 even without the test compiler flag.
     @MainActor
     static func main() async {
+        if CommandLine.arguments.contains("--readiness-safety-only") {
+            await verifyReadinessSafety()
+            return
+        }
+        if CommandLine.arguments.contains("--host-safety-only") || CommandLine.arguments.contains("--host-safety-control") {
+            verifyPropertySafety()
+        }
         await verifyContextProviders()
         if CommandLine.arguments.contains("--context-provider-only") { return }
         let configuration = MGMConfiguration(
@@ -93,4 +101,40 @@ private actor FlushObserver {
         completionCount += 1
         continuation.resume()
     }
+}
+
+// A standalone release-process regression: the original 20,000-level encode
+// terminated with SIGSEGV. _exit avoids attributing caller-owned graph teardown
+// to SDK encoding, and this path never configures a live client.
+@MainActor
+private func verifyPropertySafety() -> Never {
+    var nested: Any = "leaf"
+    for _ in 0..<20_000 { nested = [nested] }
+    if CommandLine.arguments.contains("--host-safety-control") { _exit(0) }
+    let event = MGMEvent(name: "depth_probe", properties: ["nested": nested, "readable": "yes"])
+    let data = try! JSONEncoder().encode(event)
+    precondition(data.count < 1000)
+    precondition(event.properties?["readable"]?.value as? String == "yes")
+    let cycle = NSMutableArray()
+    cycle.add(cycle)
+    let cyclic = MGMEvent(name: "cycle_probe", properties: ["cycle": cycle])
+    precondition((try! JSONEncoder().encode(cyclic)).count < 1000)
+    cycle.removeAllObjects()
+    print("Swift 6 release consumer deep and cyclic property encoding passed")
+    FileHandle.standardOutput.write(Data("host-safety passed\n".utf8))
+    _exit(0)
+}
+
+@MainActor
+private func verifyReadinessSafety() async {
+    let transfer = FlushClientTransfer(client: MostlyGoodMetrics(
+        configuration: MGMConfiguration(apiKey: "offline", trackAppLifecycleEvents: false),
+        storage: InMemoryEventStorage(), networkClient: NoNetworkClient(), skipExperimentsLoad: true
+    ))
+    await Task.detached {
+        for timeout in [Double.infinity, Double.nan, Double.greatestFiniteMagnitude] {
+            await transfer.client.ready(timeout: timeout)
+        }
+    }.value
+    print("Swift 6 readiness nonfinite deadline regression passed")
 }
