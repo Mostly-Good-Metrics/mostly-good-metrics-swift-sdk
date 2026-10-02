@@ -553,6 +553,17 @@ Output example:
 
 ## Thread Safety
 
+`flush(completion:)` always delivers its completion asynchronously on the main
+queue, including empty, opted-out, and already-running flushes. Callbacks created
+in a `@MainActor` context can safely update UI state. Background callers also
+receive their completion on the main queue; a callback isolated to another actor
+must explicitly hop to that actor. Event storage and network work stay off the
+main queue.
+
+`contextProvider` runs synchronously on the thread calling `track()`. When it
+reads main-actor UI state, call `track()` from the main actor. For tracking from
+multiple threads, supply a provider that safely supports those callers.
+
 The SDK is fully thread-safe. All public methods can be called from any thread:
 
 ```swift
@@ -582,6 +593,16 @@ The 10,000-event timing test is gated so ordinary local debug test runs remain f
 ```bash
 MGM_RUN_PERFORMANCE_TESTS=1 swift test -c release \
   --filter MainThreadPerformanceTests/testTrackDoesNotBlockMainThreadOnStorage
+```
+
+### Actor-Isolation Regression Tests
+
+CI runs the full suite with actor runtime checks, a Swift 6 consumer,
+Thread Sanitizer concurrency regressions, and an iOS Simulator run. These checks trap when an actor-isolated callback executes on the wrong
+queue; ordinary tests can otherwise pass without exposing the crash:
+
+```bash
+swift test -Xswiftc -enable-actor-data-race-checks
 ```
 
 ## License

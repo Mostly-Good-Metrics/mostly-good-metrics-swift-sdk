@@ -121,7 +121,13 @@ public final class MostlyGoodMetrics {
     }
 
     /// Whether the SDK is currently sending events
-    public private(set) var isFlushing: Bool = false
+    public private(set) var isFlushing: Bool {
+        get { flushStateLock.withLock { _isFlushing } }
+        set { flushStateLock.withLock { _isFlushing = newValue } }
+    }
+
+    private let flushStateLock = NSLock()
+    private var _isFlushing = false
 
     /// Lock for thread-safe access to the opt-out state
     private let optOutLock = NSLock()
@@ -1022,7 +1028,8 @@ public final class MostlyGoodMetrics {
     // MARK: - Flushing
 
     /// Manually flushes all pending events to the server
-    /// - Parameter completion: Optional completion handler
+    /// - Parameter completion: Optional completion handler, always delivered
+    ///   asynchronously on the main queue so MainActor-isolated UI callbacks are safe.
     public func flush(completion: ((Result<Void, MGMError>) -> Void)? = nil) {
         flushQueue.async { [weak self] in
             self?.performFlush(completion: completion)
@@ -1032,20 +1039,20 @@ public final class MostlyGoodMetrics {
     private func performFlush(completion: ((Result<Void, MGMError>) -> Void)?) {
         guard !isOptedOut else {
             debugLog("Opted out - skipping flush")
-            completion?(.success(()))
+            deliverFlushCompletion(completion, result: .success(()))
             return
         }
 
         guard !isFlushing else {
             debugLog("Already flushing, skipping")
-            completion?(.success(()))
+            deliverFlushCompletion(completion, result: .success(()))
             return
         }
 
         let events = storage.fetchEvents(limit: configuration.maxBatchSize)
         guard !events.isEmpty else {
             debugLog("No events to flush")
-            completion?(.success(()))
+            deliverFlushCompletion(completion, result: .success(()))
             return
         }
 
@@ -1067,38 +1074,56 @@ public final class MostlyGoodMetrics {
         )
 
         networkClient.sendEvents(events, context: context) { [weak self] result in
-            guard let self = self else { return }
-
-            self.isFlushing = false
-
-            switch result {
-            case .success:
-                self.storage.removeEvents(events)
-                self.debugLog("Successfully flushed \(events.count) events")
-
-                // If there are more events, continue flushing
-                if self.storage.eventCount() > 0 {
-                    self.flushQueue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                        self?.performFlush(completion: nil)
-                    }
-                }
-                completion?(.success(()))
-
-            case .failure(let error):
-                self.debugLog("Flush failed: \(error.localizedDescription)")
-
-                // Don't remove events on failure - they'll be retried
-                // But if it's a 4xx error (except rate limit), we should drop them
-                switch error {
-                case .badRequest, .unauthorized, .forbidden:
-                    self.storage.removeEvents(events)
-                    self.debugLog("Dropped \(events.count) events due to client error")
-                default:
-                    break
-                }
-
-                completion?(.failure(error))
+            guard let self else { return }
+            // URLSession and test clients may complete on any queue (or inline).
+            // Finish the batch on the same serial queue that starts flushes.
+            self.flushQueue.async {
+                self.finishFlush(result, events: events, completion: completion)
             }
+        }
+    }
+
+    private func finishFlush(
+        _ result: Result<Void, MGMError>,
+        events: [MGMEvent],
+        completion: ((Result<Void, MGMError>) -> Void)?
+    ) {
+        isFlushing = false
+
+        switch result {
+        case .success:
+            storage.removeEvents(events)
+            debugLog("Successfully flushed \(events.count) events")
+
+            if storage.eventCount() > 0 {
+                flushQueue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.performFlush(completion: nil)
+                }
+            }
+
+        case .failure(let error):
+            debugLog("Flush failed: \(error.localizedDescription)")
+
+            // Keep transient failures for retry; drop permanent client failures.
+            switch error {
+            case .badRequest, .unauthorized, .forbidden:
+                storage.removeEvents(events)
+                debugLog("Dropped \(events.count) events due to client error")
+            default:
+                break
+            }
+        }
+
+        deliverFlushCompletion(completion, result: result)
+    }
+
+    private func deliverFlushCompletion(
+        _ completion: ((Result<Void, MGMError>) -> Void)?,
+        result: Result<Void, MGMError>
+    ) {
+        guard let completion else { return }
+        DispatchQueue.main.async {
+            completion(result)
         }
     }
 

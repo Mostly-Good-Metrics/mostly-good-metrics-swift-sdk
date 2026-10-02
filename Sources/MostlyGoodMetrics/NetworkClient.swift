@@ -42,20 +42,18 @@ protocol NetworkClientProtocol {
 final class NetworkClient: NetworkClientProtocol {
     private let configuration: MGMConfiguration
     private let session: URLSession
-    private let encoder: JSONEncoder
 
     /// Current retry-after interval from rate limiting (in seconds)
     private var retryAfterDate: Date?
+    private let retryAfterLock = NSLock()
 
-    init(configuration: MGMConfiguration) {
+    init(configuration: MGMConfiguration, session: URLSession? = nil) {
         self.configuration = configuration
 
         let sessionConfig = URLSessionConfiguration.default
         sessionConfig.timeoutIntervalForRequest = 30
         sessionConfig.timeoutIntervalForResource = 60
-        self.session = URLSession(configuration: sessionConfig)
-
-        self.encoder = JSONEncoder()
+        self.session = session ?? URLSession(configuration: sessionConfig)
     }
 
     /// Sends a batch of events to the API
@@ -69,7 +67,7 @@ final class NetworkClient: NetworkClientProtocol {
         completion: @escaping (Result<Void, MGMError>) -> Void
     ) {
         // Check if we're still in rate limit backoff
-        if let retryAfter = retryAfterDate, Date() < retryAfter {
+        if let retryAfter = retryAfterLock.withLock({ retryAfterDate }), Date() < retryAfter {
             completion(.failure(.rateLimited(retryAfter: retryAfter.timeIntervalSinceNow)))
             return
         }
@@ -105,7 +103,7 @@ final class NetworkClient: NetworkClientProtocol {
         let payload = MGMEventsPayload(events: events, context: context)
 
         do {
-            let jsonData = try encoder.encode(payload)
+            let jsonData = try JSONEncoder().encode(payload)
 
             // Compress with gzip if data is large enough (> 1KB)
             if jsonData.count > 1024, let compressedData = GzipCompression.compress(jsonData) {
@@ -166,7 +164,9 @@ final class NetworkClient: NetworkClientProtocol {
 
             case 429:
                 let retryAfter = self.parseRetryAfter(from: httpResponse)
-                self.retryAfterDate = Date().addingTimeInterval(retryAfter)
+                self.retryAfterLock.withLock {
+                    self.retryAfterDate = Date().addingTimeInterval(retryAfter)
+                }
                 self.debugLog("Rate limited, retry after \(retryAfter) seconds")
                 completion(.failure(.rateLimited(retryAfter: retryAfter)))
 

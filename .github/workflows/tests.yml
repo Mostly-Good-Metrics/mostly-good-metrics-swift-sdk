@@ -39,6 +39,15 @@ jobs:
       - name: Run Tests
         run: swift test --enable-code-coverage
 
+      - name: Actor-Isolation Regression Tests
+        run: swift test --scratch-path .build/actor-checks -Xswiftc -enable-actor-data-race-checks
+
+      - name: Thread Sanitizer Concurrency Regressions
+        run: swift test --scratch-path .build/thread-sanitizer --sanitize=thread --filter 'FlushConcurrencyTests|NetworkConcurrencyTests'
+
+      - name: Swift 6 Consumer Regression
+        run: swift run --package-path Tests/Swift6Consumer --scratch-path .build/swift6-consumer Swift6Consumer
+
       - name: Main-Thread Performance Regression
         env:
           MGM_RUN_PERFORMANCE_TESTS: "1"
@@ -94,6 +103,33 @@ jobs:
             -destination "${{ matrix.destination }}" \
             -skipPackagePluginValidation \
             | xcpretty && exit ${PIPESTATUS[0]}
+
+  ios-concurrency:
+    name: iOS Actor-Isolation Regression Tests
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Run on iOS Simulator
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          print(next(d["udid"] for runtime, items in devices.items()
+              if "iOS" in runtime for d in items if "iPhone" in d["name"]))')
+          xcodebuild test \
+            -scheme MostlyGoodMetrics \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -only-testing:MostlyGoodMetricsTests/FlushConcurrencyTests \
+            -only-testing:MostlyGoodMetricsTests/NetworkConcurrencyTests \
+            OTHER_SWIFT_FLAGS='$(inherited) -enable-actor-data-race-checks' \
+            -skipPackagePluginValidation
 
   pod-lint:
     name: Pod Lint
