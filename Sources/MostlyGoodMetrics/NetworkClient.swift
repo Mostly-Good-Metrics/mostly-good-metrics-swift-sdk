@@ -3,7 +3,7 @@ import Foundation
 /// SDK version reported in the User-Agent and X-MGM-SDK-Version headers.
 /// Must match `s.version` in MostlyGoodMetrics.podspec (the release source of truth).
 /// SDKVersionTests guards against drift.
-internal let sdkVersion = "1.0.0"
+internal let sdkVersion = "1.0.1"
 
 /// Response from the experiments API
 struct ExperimentsResponse: Codable {
