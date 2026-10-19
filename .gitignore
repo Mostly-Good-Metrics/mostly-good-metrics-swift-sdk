@@ -19,10 +19,6 @@ DerivedData/
 Package.resolved
 Packages/
 
-# CocoaPods (if ever used)
-Pods/
-*.xcworkspace
-
 # Carthage (if ever used)
 Carthage/Build/
 Carthage/Checkouts/
